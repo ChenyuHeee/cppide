@@ -1,0 +1,120 @@
+1	// main.cpp —— 进程入口
+2	//
+3	// 启动顺序(architecture.md §10,顺序不能错):
+4	//   setlocale(LC_ALL,"")            必须早于 initscr(否则中文宽度全按 1 算)
+5	//   signal(SIGPIPE, SIG_IGN)        libcurl 与 runProcess 都需要
+6	//   装 endwin 安全网                 atexit + std::set_terminate + 致命信号
+7	//   解析 argv
+8	//   ConfigLoader::load
+9	//   HttpChat::globalInit()          必须在任何线程启动之前
+10	//   构造 App(内部 Ui::init,再按需启动 AiService 线程)
+11	//   run()
+12	//   App 析构 -> AiService/Runner 析构(close + join,绝不 detach)-> Ui 析构
+13	//   Ui::emergencyShutdown()(幂等 endwin 兜底)
+14	//   HttpChat::globalCleanup()
+15	//
+16	// ★ 本文件不 include <curses.h>:归一化键码与 doctor 报告都由 ui.cpp 提供。
+17	// ★ --help / --version / --print-config / --doctor 是**纯 stdout、非交互**的,
+18	//   绝不初始化 ncurses —— 这是无 tty 环境里唯一能验证本程序的入口。
+19	
+20	#include <unistd.h>
+21	
+22	#include <clocale>
+23	#include <csignal>
+24	#include <cstdio>
+25	#include <cstdlib>
+26	#include <cstring>
+27	#include <exception>
+28	#include <string>
+29	#include <vector>
+30	
+31	#include "aihttp.h"
+32	#include "app.h"
+33	#include "config.h"
+34	#include "keys.h"
+35	#include "ui.h"
+36	#include "util.h"
+37	
+38	namespace {
+39	
+40	const char* const kVersion = "0.1.0";
+41	
+42	// ------------------------------------------------------------ endwin 安全网
+43	// 只调 Ui::emergencyShutdown()(内部只做 endwin,不碰堆对象)。
+44	// 绝不把用户的终端留在 raw + noecho 状态。
+45	extern "C" void cppideAtExit() { Ui::emergencyShutdown(); }
+46	
+47	extern "C" void cppideFatalSignal(int sig) {
+48	  Ui::emergencyShutdown();
+49	  // 恢复默认处理后重新 raise:退出码/core 行为与没装 handler 时一致。
+50	  std::signal(sig, SIG_DFL);
+51	  std::raise(sig);
+52	}
+53	
+54	void cppideTerminate() {
+55	  Ui::emergencyShutdown();
+56	  std::fputs("cppide: 未捕获的异常,已退出。\n", stderr);
+57	  std::abort();
+58	}
+59	
+60	void installSafetyNet() {
+61	  std::atexit(cppideAtExit);
+62	  std::set_terminate(cppideTerminate);
+63	  std::signal(SIGSEGV, cppideFatalSignal);
+64	  std::signal(SIGBUS, cppideFatalSignal);
+65	  std::signal(SIGABRT, cppideFatalSignal);
+66	}
+67	
+68	// ------------------------------------------------------------------- argv
+69	struct Args {
+70	  std::string config_path;   // --config <PATH>
+71	  std::string file;          // 位置参数
+72	  bool help = false;
+73	  bool version = false;
+74	  bool print_config = false;
+75	  bool doctor = false;
+76	};
+77	
+78	bool parseArgs(int argc, char** argv, Args& a, std::string& err) {
+79	  bool no_more_flags = false;
+80	  std::vector<std::string> positional;
+81	  for (int i = 1; i < argc; ++i) {
+82	    const std::string s = argv[i] ? argv[i] : "";
+83	    if (!no_more_flags && s == "--") {
+84	      no_more_flags = true;
+85	      continue;
+86	    }
+87	    if (!no_more_flags && s.size() >= 2 && s[0] == '-') {
+88	      if (s == "-h" || s == "--help") {
+89	        a.help = true;
+90	      } else if (s == "-V" || s == "--version") {
+91	        a.version = true;
+92	      } else if (s == "--print-config") {
+93	        a.print_config = true;
+94	      } else if (s == "--doctor") {
+95	        a.doctor = true;
+96	      } else if (s == "--config") {
+97	        if (i + 1 >= argc) {
+98	          err = "选项 --config 缺少参数。用法:cppide --config <配置文件路径>";
+99	          return false;
+100	        }
+101	        a.config_path = argv[++i];
+102	      } else if (util::startsWith(s, "--config=")) {
+103	        a.config_path = s.substr(std::strlen("--config="));
+104	        if (a.config_path.empty()) {
+105	          err = "选项 --config= 的值为空。用法:cppide --config <配置文件路径>";
+106	          return false;
+107	        }
+108	      } else {
+109	        err = "未知选项 " + s + "。请用 `cppide --help` 查看用法。";
+110	        return false;
+111	      }
+112	      continue;
+113	    }
+114	    positional.push_back(s);
+115	  }
+116	  if (positional.size() > 1) {
+117	    err = "一次只能打开一个文件(本编辑器只编译当前打开的单个文件),"
+118	          "但收到 " + std::to_string(positional.size()) + " 个:" +
+119	          util::join(positional, " ");
+120	    return false;

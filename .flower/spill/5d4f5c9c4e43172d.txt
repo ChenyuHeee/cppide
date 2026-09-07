@@ -1,0 +1,75 @@
+1	// ui.h —— ncurses 渲染器与配色主题
+2	//
+3	// ★ 本头文件**不 include <curses.h>**,也不出现任何 curses 类型:
+4	//   WINDOW* 之类一律留在 ui.cpp 内部。理由见 keys.h 顶部的宏污染说明。
+5	//   ui.cpp 里请先 `#define NCURSES_NOMACROS` 再 `#include <curses.h>`。
+6	//
+7	// 只读契约:Ui 只通过 const AppModel& 拿数据,**不持有可写的 TextBuffer/Editor**,
+8	// 这是 §6 结构性保证的一部分(渲染层没有任何写缓冲区的能力)。
+9	//
+10	// AppModel 定义在 app.h;这里只用引用,故前置声明,避免 ui.h <-> app.h 成环。
+11	#pragma once
+12	
+13	#include <cstdint>
+14	#include <string>
+15	#include <vector>
+16	
+17	#include "highlight.h"
+18	#include "keys.h"
+19	
+20	struct AppModel;   // app.h
+21	
+22	// 屏幕矩形(行/列,均为 0 起)。
+23	struct Rect {
+24	  int y = 0, x = 0, h = 0, w = 0;
+25	  bool empty() const { return h <= 0 || w <= 0; }
+26	};
+27	
+28	// 一帧的布局:编辑区(含行号槽)/ 标签栏 / 面板内容区 / 状态栏 / 提示行。
+29	struct Layout {
+30	  Rect gutter;     // 行号槽(cfg.show_line_numbers 为 false 时 w=0)
+31	  Rect editor;     // 编辑文本区
+32	  Rect tabs;       // 面板标签栏(1 行);面板折叠时 h=0
+33	  Rect panel;      // 面板内容区;面板折叠时 h=0
+34	  Rect prompt;     // 提示行(1 行);无提示时 h=0
+35	  Rect status;     // 状态栏(1 行)
+36	};
+37	
+38	// 颜色对与属性。COLORS >= 256 时 ghost 用灰色(color 8),否则退化为 A_DIM。
+39	struct Theme {
+40	  // 颜色对编号(1 起,0 是 ncurses 保留的默认对)。
+41	  enum Pair : short {
+42	    P_Normal = 1, P_Keyword, P_Type, P_Preproc, P_String, P_Char, P_Number,
+43	    P_Comment, P_Operator, P_Func, P_Todo,
+44	    P_Ghost, P_LineNo, P_LineNoPractice,
+45	    P_StatusCode, P_StatusPractice, P_StatusBar,
+46	    P_TabActive, P_TabInactive, P_TabUnread,
+47	    P_Error, P_Warn, P_Meta, P_Help,
+48	    P_Count
+49	  };
+50	
+51	  bool has_color = false;
+52	  int  colors = 0;         // COLORS
+53	  int  pairs = 0;          // COLOR_PAIRS
+54	  bool wide_ok = true;     // 宽字符可用(能否正常输出中文)
+55	
+56	  void init();                        // start_color / use_default_colors / init_pair
+57	  short pairForTok(Tok t) const;      // Tok -> 颜色对编号
+58	  int   attrForTok(Tok t) const;      // 已合成的 attr(含 COLOR_PAIR)
+59	  int   ghostAttr() const;            // 灰色 或 A_DIM
+60	  int   modeAttr(bool practice) const;// 状态栏模式徽章:练习=黄/品红底,写代码=绿/青底
+61	};
+62	
+63	class Ui {
+64	 public:
+65	  Ui();
+66	  ~Ui();
+67	  Ui(const Ui&) = delete;
+68	  Ui& operator=(const Ui&) = delete;
+69	
+70	  // initscr + raw() + noecho() + keypad(TRUE) + set_escdelay(25) + curs_set(1) + 主题。
+71	  // setlocale(LC_ALL,"") 由 main() 在此之前完成(必须早于 initscr)。
+72	  bool init(std::string& err);
+73	  void shutdown();                      // endwin,幂等
+74	  // 崩溃安全网:atexit / std::set_terminate / SIGSEGV-SIGBUS-SIGABRT handler 里调,
+75	  // 只做 endwin(),不碰任何堆对象。绝不把用户终端留在 raw+noecho 状态。

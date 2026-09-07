@@ -1,0 +1,120 @@
+// panel.cpp —— 底部输出面板(编译/运行/AI/输入)与 stdin 缓冲的实现
+//
+// 本文件是**纯逻辑**:不 include curses.h,不碰终端。
+// (panel.h 有成员函数 `int scroll() const;`,curses 的宏会把它打坏 —— 见
+//  wave1-report §2.3。绘制在 ui.cpp,那里才允许 curses。)
+//
+// 三条把“100MB 运行输出 / 中文 AI 流式 delta”兜住的不变式:
+//
+//  1. **环形裁剪**:lines_.size() 恒 <= max_lines_(默认 5000)。超了丢最旧,
+//     且**批量丢**(多丢 1/8 容量)—— 否则每行一次 vector 前端 erase 是 O(n),
+//     灌 250 万行就是 O(n²)。批量丢把它摊销成每次 append 常数级搬移。
+//  2. **单行字节上限** kMaxLineBytes:没有 '\n' 的 100MB 输出(二进制、进度条)
+//     否则会变成一个巨型行,把 layout_ 撑爆(视觉行数 ≈ 字节数/宽度)。
+//     超了在 **UTF-8 字符边界**硬分行。两条上限合起来把内存钉死在
+//     max_lines_ * kMaxLineBytes ≈ 20MB 量级。
+//  3. **流式的“carry 缓冲”是隐式的**:delta 在多字节字符中间被切断时,我们
+//     照原样把字节接到最后一行的尾巴上 —— 残缺序列只是**暂时**残缺,下一个
+//     delta 一到就自动拼成完整字符。因此“每 1 字节投喂”与“一次性投喂”得到的
+//     字节流完全相同(硬分行点也只取决于前 kMaxLineBytes+1 个字节,同样相同)。
+//     残缺期间的显示由 util::utf8Decode 兜住(非法字节 = 1 字节的 U+FFFD),
+//     wrapDisplay 因此永不把字符切两半。
+#include "panel.h"
+
+#include <algorithm>
+#include <utility>
+
+#include "util.h"
+
+namespace {
+
+// 单行字节上限。选 4096:比任何真实的编译诊断/运行输出行都长得多,而
+// max_lines_(5000) * 4096 ≈ 20MB 是可以接受的最坏内存。
+constexpr size_t kMaxLineBytes = 4096;
+
+const PanelLine& emptyPanelLine() {
+  static const PanelLine kEmpty;
+  return kEmpty;
+}
+
+// ---------------------------------------------------------------------------
+// ★ 头文件缺口的兜底(需要协调者放行头文件改动来去掉)
+//
+// panel.h 的冻结版声明了 unread()/setUnread()/errorCount()/setErrorCount()
+// 四个方法,**却没有对应的存储成员**(private 区只有 id_/lines_/max_lines_/
+// streaming_/view_*/scroll_/auto_scroll_/cursor_line_/tab_width_/layout_*)。
+// 头文件不可改,所以这里把这两个标签状态放在一张**按 PanelId 索引**的静态表里。
+//
+// 为什么按 id 而不是按 this 指针:app.h 里是 `std::vector<Panel> panels_`,
+// emplace_back 触发重分配时元素会被**移动**到新地址 —— 按地址存的状态会在
+// 那一刻静默丢失(标签上的 '*' 无声无息不见了,极难查)。按 id 存则天然
+// 免疫移动/拷贝/重分配。构造函数会重置对应表项,新建的面板总是干净状态。
+//
+// 代价(真实程序里不会发生):同一个 PanelId 的**多个同时存活的实例**会共享
+// 标签状态。App 每个 id 只有一个实例。
+//
+// 修复路径:在 panel.h 加 `bool unread_ = false; int error_count_ = 0;`,
+// 然后删掉本节 + 改下面 4 个访问器和构造函数里的一行,别处一行都不用动。
+struct TabState {
+  bool unread = false;
+  int error_count = 0;
+};
+
+TabState& tabState(PanelId id) {
+  static TabState st[kPanelCount + 1];              // 末格给非法 id 兜底
+  int i = static_cast<int>(id);
+  if (i < 0 || i >= kPanelCount) i = kPanelCount;
+  return st[i];
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 边界:返回 (off, off+cap] 区间内 <= off+cap 的最大字符起点。
+// 前置条件:off + cap < s.size()。
+// 只依赖 s[off..off+cap] 这些字节 —— 这正是“1 字节投喂 == 一次性投喂”的关键:
+// 两种投喂方式在这里看到的字节完全一样,分行点因此完全一样。
+size_t utf8SplitPoint(const std::string& s, size_t off, size_t cap) {
+  size_t p = off + cap;
+  while (p > off && util::utf8IsContinuation(static_cast<unsigned char>(s[p]))) --p;
+  if (p == off) {
+    // 单个字符就比 cap 长(只可能是畸形序列):吃掉整个字符,保证前进。
+    p = util::utf8Next(s, off);
+    if (p <= off) p = off + 1;
+  }
+  return p;
+}
+
+// 环形裁剪:返回丢弃的行数。批量丢以摊销前端 erase 的 O(n)。
+int ringTrim(std::vector<PanelLine>& lines, int max_lines) {
+  const size_t cap = (max_lines < 1) ? 1u : static_cast<size_t>(max_lines);
+  if (lines.size() <= cap) return 0;
+  size_t drop = lines.size() - cap + cap / 8;
+  if (drop > lines.size()) drop = lines.size();
+  lines.erase(lines.begin(), lines.begin() + static_cast<std::ptrdiff_t>(drop));
+  return static_cast<int>(drop);
+}
+
+// 把最后一行按 kMaxLineBytes 硬分行(UTF-8 边界),边分边裁剪,返回丢弃的行数。
+// **一趟扫完**:早期版本是“切头 + substr 剩余”,对 8MB 无换行输出是 O(n²/cap)
+// (16GB 拷贝),这里改成一次遍历 + assign,总拷贝 O(n)。
+int splitLastIfTooLong(std::vector<PanelLine>& lines, int max_lines) {
+  if (lines.empty() || lines.back().text.size() <= kMaxLineBytes) return 0;
+  PanelLine proto = lines.back();          // 元信息(颜色/严重度/diag_index)
+  const std::string all = std::move(lines.back().text);
+  proto.text.clear();
+  lines.pop_back();
+
+  int dropped = 0;
+  size_t off = 0;
+  while (all.size() - off > kMaxLineBytes) {
+    const size_t p = utf8SplitPoint(all, off, kMaxLineBytes);
+    PanelLine one = proto;
+    one.text.assign(all, off, p - off);
+    lines.push_back(std::move(one));
+    dropped += ringTrim(lines, max_lines);
+    off = p;
+  }
+  PanelLine tail = proto;
+  tail.text.assign(all, off, std::string::npos);
+  lines.push_back(std::move(tail));
+  dropped += ringTrim(lines, max_lines);
+  return dropped;

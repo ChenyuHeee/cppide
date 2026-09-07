@@ -1,0 +1,120 @@
+16://      displayColToByte / wrapDisplay 里生效。
+17-//    - wcwidth 返回 -1 且内置表也不认识的码点(孤立代理、>0x10FFFF、私用区…)
+18-//      算 **1** 列。永不返回负数 —— 布局计算里出现负宽度是灾难。
+19-//    - 组合字符 / 零宽字符算 **0** 列。
+20-// 3. **非法 UTF-8**:整个文件对任意字节串都安全。`utf8Decode()` 对非法序列
+21-//    固定“吃 1 字节 + 返回 U+FFFD”,永不返回 0,所以所有 `i += utf8Decode(...)`
+22-//    的循环必然前进,不会死循环、不会越界。编辑器会打开二进制文件,这是硬要求。
+23-// 4. **字符边界**:所有对外返回的字节偏移都落在 UTF-8 字符起点上
+24-//    (非法字节自成一个“字符”)。
+25-// 5. **displayColToByte 的取整规则**:显示列落在一个宽字符或一个 Tab 的**中间**时,
+26-//    吸附到**该字符的起始字节**(向左吸附)。列 <0 → 0;列 >= 整行宽度 → s.size()。
+27-
+28-#include "util.h"
+29-
+30-#include <dirent.h>
+31-#include <fcntl.h>
+32-#include <pwd.h>
+33-#include <sys/stat.h>
+34-#include <sys/types.h>
+35-#include <unistd.h>
+36-
+37-#include <cerrno>
+38-#include <chrono>
+39-#include <cstdio>
+40-#include <cstdlib>
+41-#include <cstring>
+42-#include <ctime>
+43-#include <cwchar>
+44-
+45-namespace util {
+46-namespace {
+47-
+48-// 显示列的安全上限:极长行也不会让 int 溢出(UBSan 会抓有符号溢出)。
+49-constexpr int kMaxCol = 1 << 28;
+50-
+51-inline int clampTabWidth(int tab_width) {
+52-  if (tab_width < 1) return 1;
+53-  if (tab_width > 256) return 256;
+54-  return tab_width;
+55-}
+56-
+57-// 从显示列 col 出发,一个 Tab 前进到下一个制表位所需的列数(恒 >= 1)。
+58-inline int tabAdvance(int col, int tab_width) {
+59-  if (col < 0) col = 0;
+60-  return tab_width - (col % tab_width);
+61-}
+62-
+63-inline bool isAsciiSpace(char c) {
+64-  return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+65-}
+66-
+67-inline char lowerAscii(char c) {
+68-  return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+69-}
+70-
+71-struct Range32 { uint32_t lo, hi; };
+72-
+73-bool inRanges(uint32_t cp, const Range32* r, size_t n) {
+74-  size_t lo = 0, hi = n;
+75-  while (lo < hi) {  // 二分,表按 lo 升序且互不重叠
+76-    size_t mid = lo + (hi - lo) / 2;
+77-    if (cp < r[mid].lo) hi = mid;
+78-    else if (cp > r[mid].hi) lo = mid + 1;
+79-    else return true;
+80-  }
+81-  return false;
+82-}
+83-
+84-// wcwidth 不可用(locale 是 "C")时的兜底:East Asian Wide/Fullwidth。
+85-const Range32 kWideFallback[] = {
+86-    {0x1100, 0x115F},   {0x231A, 0x231B},   {0x2329, 0x232A},   {0x23E9, 0x23EC},
+87-    {0x25FD, 0x25FE},   {0x2614, 0x2615},   {0x2648, 0x2653},   {0x267F, 0x267F},
+88-    {0x2693, 0x2693},   {0x26A1, 0x26A1},   {0x26AA, 0x26AB},   {0x26BD, 0x26BE},
+89-    {0x26C4, 0x26C5},   {0x26CE, 0x26CE},   {0x26D4, 0x26D4},   {0x26EA, 0x26EA},
+90-    {0x26F2, 0x26F3},   {0x26F5, 0x26F5},   {0x26FA, 0x26FA},   {0x26FD, 0x26FD},
+91-    {0x2705, 0x2705},   {0x270A, 0x270B},   {0x2728, 0x2728},   {0x274C, 0x274C},
+92-    {0x274E, 0x274E},   {0x2753, 0x2755},   {0x2757, 0x2757},   {0x2795, 0x2797},
+93-    {0x27B0, 0x27B0},   {0x27BF, 0x27BF},   {0x2B1B, 0x2B1C},   {0x2B50, 0x2B50},
+94-    {0x2B55, 0x2B55},   {0x2E80, 0x303E},   {0x3041, 0x33FF},   {0x3400, 0x4DBF},
+95-    {0x4E00, 0x9FFF},   {0xA000, 0xA4CF},   {0xA960, 0xA97F},   {0xAC00, 0xD7A3},
+96-    {0xF900, 0xFAFF},   {0xFE10, 0xFE19},   {0xFE30, 0xFE6F},   {0xFF00, 0xFF60},
+--
+779:std::vector<WrapSeg> wrapDisplay(const std::string& s, int width, int tab_width) {
+780-  std::vector<WrapSeg> out;
+781-  const int tw = clampTabWidth(tab_width);
+782-  const int w_limit = (width < 1) ? 1 : width;
+783-  const size_t n = s.size();
+784-  size_t i = 0;
+785-
+786-  for (;;) {
+787-    const size_t seg_start = i;
+788-    int col = 0;
+789-    size_t j = i;
+790-    bool hard_nl = false;
+791-    size_t ws_run_start = std::string::npos;    // 本段内最后一个“内容后的空白run”起点
+792-    bool prev_is_ws = true;                     // 段首的空白不算断点机会
+793-
+794-    while (j < n) {
+795-      if (s[j] == '\n') { hard_nl = true; break; }
+796-      const bool is_ws = (s[j] == ' ' || s[j] == '\t');
+797-      if (is_ws && !prev_is_ws) ws_run_start = j;
+798-
+799-      int w = 0;
+800-      size_t len = stepWidth(s, j, col, tw, w);
+801-      if (col + w > w_limit && j > seg_start) break;   // 放不下了(至少已收 1 个字符)
+802-      col += w;
+803-      j += len;
+804-      prev_is_ws = is_ws;
+805-    }
+806-
+807-    if (j >= n) {                                // 到结尾
+808-      out.push_back(WrapSeg{static_cast<int>(seg_start), static_cast<int>(n - seg_start)});
+809-      break;
+810-    }
+811-    if (hard_nl) {
+812-      out.push_back(WrapSeg{static_cast<int>(seg_start), static_cast<int>(j - seg_start)});
+813-      i = j + 1;
+814-      if (i >= n) break;                         // 末尾换行不产生空尾段
+815-      continue;
+816-    }

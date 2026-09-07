@@ -1,0 +1,120 @@
+1	# cppide 验收审计报告(独立审计员)
+2	
+3	> 审计日期:2026-09-06 / 09-07
+4	> 审计环境:Debian aarch64,g++ (Debian) 14.2.0,ncursesw 6.5.20250216,libcurl(gnutls),Python 3.13.15
+5	> 审计对象:`/work` 下的 cppide,对照 `.flower/notes/需求.md`(冻结的需求确认书)
+6	> 立场:**独立验收**。之前 agent 的自述报告一律当作"被审计对象的陈述",全部结论以本人重跑的证据为准。
+7	> 凭据纪律:**全程未使用、未猜测、未尝试获取任何真实 API key**。所有 AI 路径一律用
+8	> 假 key(`FAKEKEY_*` / `AUDITFAKEKEY_*` / `UNIQUEKEY_*`)+ 本机 `127.0.0.1` 上的假 SSE 端点,
+9	> 不可路由地址只用 RFC5737 保留段 `203.0.113.0/24`。未向 `api.deepseek.com` 发过任何请求。
+10	
+11	---
+12	
+13	## 0. 本次审计新增的工具与脚本
+14	
+15	| 脚本 | 作用 |
+16	|---|---|
+17	| `.flower/scripts/audit-fake-ai-server.py` | 自写的假 OpenAI 兼容 SSE 端点。按 URL 路径切换 正常补全 / 违规含代码块回复 / 500 / 401 / 畸形 JSON / 非 JSON / 超慢 / 秒断连,并把收到的请求(path + headers + body)逐条落盘供断言 |
+18	| `.flower/scripts/audit-ai-modes.sh` | 验收 6 / 7 的端到端(本报告最核心的证据来源) |
+19	| `.flower/scripts/audit-net-failures.sh` | 验收 9 的六种异常路径 + 在飞期间键盘存活 |
+20	| `.flower/scripts/audit-open-edit-save.sh` | 验收 2 的四种扩展名 + 从 ANSI 流里抓高亮属性 |
+21	| `.flower/scripts/audit-build-run-mode.sh` | 验收 3 / 4 / 5 |
+22	| `.flower/scripts/audit-config-key.sh` | 验收 8 |
+23	| `.flower/scripts/audit-readme-keys.sh` | 验收 10:README 逐条核对 + 真按 18 个快捷键 |
+24	| `.flower/scripts/audit-asan-smoke.sh` | 验收 12:ASan/UBSan/LSan 下 11 个场景的 pty 冒烟 |
+25	| `.flower/scripts/audit-idle-cost.sh` | 复现本次发现的 P1 问题(写代码模式空转烧钱) |
+26	
+27	### 0.1 先验证"验证工具"本身可信
+28	
+29	审计前先对 pty 驱动器做了**正负控**,避免拿一个"永远 PASS 的假机器"去审计:
+30	
+31	```
+32	负控:expect ZZZ_NEVER_APPEARS_ZZZ  -> 退出码 1(== 有失败 ==)  ✅ 会失败
+33	正控:expect cppide                 -> 退出码 0(== 全部通过 ==)✅ 会通过
+34	```
+35	
+36	**驱动器的一个坑(踩了,记下来)**:`wave5-pty-drive.cpp` 的第 4 个参数名叫 `raw_out`,
+37	但它写进去的是**过滤掉转义序列后的文本**(`g_plain`,第 592–593 行);
+38	**真正的原始字节流在 `<raw_out>.raw`**(第 594–595 行)。
+39	一开始拿错文件去抓 ANSI 属性,得出"全部 token 同色、没有高亮"的假结论。
+40	凡是要断言颜色/属性的,必须用 `.raw` 那个文件。
+41	
+42	### 0.2 两类会制造假失败的断言陷阱(本次踩到,已在脚本里注释固化)
+43	
+44	1. **ncurses 是差量重绘**。状态栏从 `1:1` 变成 `12:23` 时,ncurses 只重写发生变化的格子,
+45	   过滤后的流里会残留成 `2:23`,看起来像"跳错了行"。
+46	   → 凡是断言光标落点,**一律走文件系统**(在落点敲一个标记、存盘、看标记在第几行)。
+47	2. **逐字符回显**。连续敲 `ZZALIVE1`,每个字符各触发一次重绘,过滤后字符之间被插入空格,
+48	   `expect "ZZALIVE1"` 永远匹配不上。
+49	   → 凡是断言"输入生效",**一律走文件系统**(存盘后 grep)。
+50	
+51	本报告里凡标注"文件系统断言"的证据,都不受这两个陷阱影响。
+52	
+53	---
+54	
+55	## 1. 验收标准逐条
+56	
+57	### 验收 1 — 独立可执行文件,终端直接运行,不依赖 vim/neovim/VSCode
+58	
+59	**我怎么验的**
+60	1. `make clean && make -j4` 从干净状态全量重建。
+61	2. `ldd ./cppide` 看动态依赖。
+62	3. `grep -rniE '\b(vim|nvim|neovim|emacs|nano|vscode|"code"|subl)\b' src/ Makefile`。
+63	4. 查全部进程创建点(`system|popen|exec*|fork|posix_spawn`)。
+64	
+65	**证据**
+66	- 重建:`exit=0`,**warning 0 条,error 0 条**(`grep -c 'warning:' /tmp/build_full.log` → 0)。
+67	- 产物 605,536 字节。直接依赖只有:
+68	  `libncursesw.so.6`、`libtinfo.so.6`、`libcurl-gnutls.so.4`、`libstdc++`、`libgcc_s`、`libc`
+69	  (其余全是 libcurl 的传递依赖:gnutls/nghttp2/krb5/… 属于 libcurl 自身的链)。
+70	- 外部编辑器 grep:**0 处**。唯一命中是 `src/keys.cpp:75` 一句注释里提到 "emacs 习惯"(说的是键位风格,不是调用)。
+71	- 进程创建点只有两处,都在 `src/proc.cpp`:`::fork()`(第 466 行)与 `::execvp()`(第 253 行),
+72	  用途是拉起编译器和运行用户程序。**没有任何地方拉起外部编辑器。**
+73	
+74	**结论:通过**
+75	
+76	---
+77	
+78	### 验收 2 — 打开/编辑/保存 .c/.cpp/.h/.hpp + C/C++ 语法高亮
+79	
+80	**我怎么验的**
+81	四种扩展名各在 pty 里真开一次、敲一个唯一标记、`Ctrl-O` 存盘、`Ctrl-X` 退出,再读磁盘断言。
+82	高亮部分:造一个把关键字/字符串/注释/数字/预处理指令分行摆开的 `.cpp`,在 pty 里打开,
+83	从**真正的原始字节流**(`.raw`)里按 SGR 分段,把每个 token 归到它所在段的属性上。
+84	
+85	**证据**(`audit-open-edit-save.sh`,5/5 通过)
+86	```
+87	PASS  .c   打开/编辑/保存 —— 磁盘内容正确
+88	PASS  .cpp 打开/编辑/保存 —— 磁盘内容正确
+89	PASS  .h   打开/编辑/保存 —— 磁盘内容正确
+90	PASS  .hpp 打开/编辑/保存 —— 磁盘内容正确
+91	
+92	关键字 int          SGR=['32']   (绿)
+93	字符串 zzstringlit  SGR=['36']   (青)
+94	注释   zzcommentword SGR=['34']  (蓝)
+95	数字   1234567      SGR=['31']   (红)
+96	预处理 #include     SGR=['35']   (品红)
+97	全部出现过的 SGR 组合数 = 5
+98	PASS  关键字/字符串/注释/数字 四类属性两两不同
+99	```
+100	不是全同色,是真的五类分色。
+101	
+102	**结论:通过**
+103	
+104	---
+105	
+106	### 验收 3 — 一个快捷键调用系统编译器;编译错误可见并能跳到对应行号
+107	
+108	**我怎么验的**
+109	生成错误分别落在**第 3 / 7 / 12 / 20 / 31 行**的五个文件(每个先用宿主 `c++ -fsyntax-only`
+110	确认编译器自己确实把错报在该行,否则跳过 —— 避免断言的是编译器而不是编辑器)。
+111	pty 里 `Ctrl-B` 编译 → 断言面板出现 `errN.cpp:N:` 形态的诊断 → `Ctrl-N` 跳诊断 →
+112	`Esc` 把焦点交回编辑区 → 在光标处敲 `ZZHERE` → `Ctrl-O` 存盘 →
+113	**读磁盘看 `ZZHERE` 落在第几行**(文件系统断言,不看屏幕)。
+114	
+115	**证据**(`audit-build-run-mode.sh`,15/15 通过)
+116	```
+117	PASS  编译错误可见:第 3 行的诊断出现在【编译】面板
+118	PASS  跳行生效:Ctrl-N 后光标真的落在第 3 行(ZZHERE 落在该行)
+119	PASS  … 第 7 行 …    PASS  跳行生效:第 7 行
+120	PASS  … 第 12 行 …   PASS  跳行生效:第 12 行

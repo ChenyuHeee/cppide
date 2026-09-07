@@ -1,0 +1,120 @@
+      case EvKind::RunDone: onRunDone(ev); break;
+      case EvKind::Status:
+        if (!ev.text.empty()) setStatus(ev.text);
+        break;
+    }
+  }
+}
+
+// ================================================================== 按键分派
+void App::onKey(int key) {
+  const Action a = lookupAction(key);
+
+  // 帮助浮层:任意键关闭(F1 再按一次也是关)。
+  if (help_) {
+    doHelp(false);
+    if (a == Action::Help || a == Action::Escape) return;
+    // 其余键不再二次生效,避免"关帮助顺手改了缓冲区"。
+    return;
+  }
+  if (prompt_ != PromptKind::None) {
+    onPromptKey(key, a);
+    return;
+  }
+  if (focus_ >= 0) {
+    onPanelKey(key, a);
+    return;
+  }
+  onEditorKey(key, a);
+}
+
+void App::onEditorKey(int key, Action a) {
+  switch (a) {
+    // ---------------- 移动 ----------------
+    case Action::MoveLeft: ed_.moveLeft(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveRight: ed_.moveRight(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveUp: ed_.moveUp(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveDown: ed_.moveDown(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveWordLeft: ed_.moveWordLeft(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveWordRight: ed_.moveWordRight(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveHome: ed_.moveHome(); ai_.noteActivity(); markDirty(); return;
+    case Action::MoveEnd: ed_.moveEnd(); ai_.noteActivity(); markDirty(); return;
+    case Action::PageUp: ed_.movePageUp(); ai_.noteActivity(); markDirty(); return;
+    case Action::PageDown: ed_.movePageDown(); ai_.noteActivity(); markDirty(); return;
+    case Action::BufferStart: ed_.moveBufferStart(); ai_.noteActivity(); markDirty(); return;
+    case Action::BufferEnd: ed_.moveBufferEnd(); ai_.noteActivity(); markDirty(); return;
+
+    // ---------------- 编辑 ----------------
+    case Action::Enter: ed_.insertNewline(); ai_.noteActivity(); markDirty(); return;
+    case Action::Backspace: ed_.backspace(); ai_.noteActivity(); markDirty(); return;
+    case Action::Delete: ed_.del(); ai_.noteActivity(); markDirty(); return;
+    case Action::Tab: doTab(); return;
+    case Action::ShiftTab: ed_.unindent(); ai_.noteActivity(); markDirty(); return;
+    case Action::Undo:
+      // Editor::undo 内部不包 Edit —— 包了 TextBuffer::undo 会返回 false。
+      if (!ed_.undo()) setStatus("没有可撤销的操作");
+      ai_.noteActivity();
+      markDirty();
+      return;
+    case Action::Redo:
+      if (!ed_.redo()) setStatus("没有可重做的操作");
+      ai_.noteActivity();
+      markDirty();
+      return;
+    case Action::CutLine: ed_.cutLine(); ai_.noteActivity(); markDirty(); return;
+    case Action::CopyLine: ed_.copyLine(); setStatus("已复制当前行"); markDirty(); return;
+    case Action::PasteLine: ed_.pasteLines(); ai_.noteActivity(); markDirty(); return;
+
+    // ---------------- 全局 ----------------
+    case Action::Escape: doEscape(); return;
+    case Action::Save: doSave(); return;
+    case Action::Quit: doQuit(false); return;
+    case Action::Compile: doCompile(false); return;
+    case Action::Run: doRun(true); return;
+    case Action::CompileAndRun: doCompile(true); return;
+    case Action::ToggleAiMode: doToggleAiMode(); return;
+    case Action::AskAi: doAskAi(); return;
+    case Action::GotoLine: openPrompt(PromptKind::GotoLine, "跳到行号: "); return;
+    case Action::Find: openPrompt(PromptKind::Find, "查找: ", ed_.lastSearch()); return;
+    case Action::FindNext:
+      if (ed_.lastSearch().empty()) {
+        openPrompt(PromptKind::Find, "查找: ");
+      } else if (!ed_.find(ed_.lastSearch(), true, true)) {
+        setStatus("未找到:" + ed_.lastSearch());
+      }
+      markDirty();
+      return;
+    case Action::NextDiag: cycleDiag(1); return;
+    case Action::PrevDiag: cycleDiag(-1); return;
+    case Action::Redraw: doRedraw(); return;
+    case Action::Help: doHelp(true); return;
+    case Action::FocusCompile: focusPanel(PanelId::Compile); return;
+    case Action::FocusRun: focusPanel(PanelId::Run); return;
+    case Action::FocusAi: focusPanel(PanelId::Ai); return;
+    case Action::FocusInput: focusPanel(PanelId::Input); return;
+    case Action::TogglePanel: togglePanel(); return;
+    case Action::PanelTaller: resizePanel(1); return;
+    case Action::PanelShorter: resizePanel(-1); return;
+    case Action::NextTab: nextTab(); return;
+
+    default: break;
+  }
+
+  // 未绑定的键:可打印字符进缓冲区,其它一律忽略(不响铃,免得误触很吵)。
+  if (isTextInput(key)) {
+    ed_.insertText(util::codepointToUtf8(charOf(key)));
+    ai_.noteActivity();
+    markDirty();
+  }
+}
+
+void App::onPanelKey(int key, Action a) {
+  const PanelId id = static_cast<PanelId>(clampInt(focus_, 0, kPanelCount - 1));
+  Panel& p = panel(id);
+
+  if (a == Action::Escape) {
+    doEscape();
+    return;
+  }
+  if (a == Action::Tab) {   // §8.3:面板聚焦时 Tab 切下一个标签
+    nextTab();

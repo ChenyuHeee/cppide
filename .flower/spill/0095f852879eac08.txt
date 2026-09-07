@@ -1,0 +1,149 @@
+# cppide 实现架构设计
+
+> 依据:`.flower/notes/需求.md`(冻结)。本文件是实现期的唯一接口权威。
+> 头文件在 Wave 1 冻结,之后任何签名变更必须由协调者统一改。
+
+## 0. 技术决策摘要
+
+| 项 | 决策 | 理由 |
+|---|---|---|
+| 语言 | C++17 | macOS 自带工具链可直接编译 |
+| 渲染 | ncurses(宽字符)| 系统自带;AI 面板要显示中文,必须走 `wget_wch`/`waddnwstr` |
+| HTTP | libcurl | macOS 自带 |
+| JSON | 自写 `src/json.{h,cpp}` | 不联网下载、不引外部依赖 |
+| 构建 | 手写 Makefile | 不引 CMake |
+| 平台 API | 仅 POSIX + ncurses + libcurl | 无 macOS 独有 API,可在 Linux 容器编译验证 |
+| 可执行名 | `cppide` | `icpc` 会与 Intel 编译器冲突,`cpp` 是预处理器;`cppide` 无冲突 |
+| 选区 | **不做** | 需求未要求;终端自身的鼠标选择 + Cmd-C 已够。改为行级操作(剪切行/粘贴行/复制行) |
+| 子进程 | `fork`+`execvp`+`poll`,**绝不用 popen/system** | 需要 pid(超时 kill)、双向管道、stdout/stderr 分离、退出状态、不经过 `/bin/sh` |
+
+> 开发期注意:Linux 容器需先 `apt-get install build-essential libncursesw5-dev libcurl4-openssl-dev`。
+
+---
+
+## 1. 文件划分
+
+```
+Makefile
+README.md
+src/
+  main.cpp        90    进程入口:locale / SIGPIPE / curl global / endwin 安全网 / argv
+  app.h  150      AppModel + App 类声明
+  app.cpp 570     主循环、按键分派、事件排空、编译/运行/AI 编排
+  ui.h   140      Ui 渲染器声明 + Theme
+  ui.cpp 570      ncurses 初始化与全部绘制(编辑区/行号/ghost/面板/状态栏/提示行/帮助)
+  editor.h 180    Editor:光标、视口、编辑操作、Ghost
+  editor.cpp 540
+  textbuf.h 150   TextBuffer:行数组 + 撤销
+  textbuf.cpp 430
+  highlight.h 90  Highlighter(纯函数)+ HighlightCache(行首状态缓存)
+  highlight.cpp 400
+  panel.h 120     Panel(输出面板)+ StdinBuffer
+  panel.cpp 300
+  proc.h 130      ProcSpec / ProcResult / runProcess / Runner(后台线程)
+  proc.cpp 420
+  build.h 130     Diag / Builder:命令装配 + 诊断解析
+  build.cpp 380
+  aihttp.h 100    ChatRequest / ChatResponse / HttpChat / SseParser
+  aihttp.cpp 380
+  ai.h   160      AiMode / AiSink / AiRequest / AiService
+  ai.cpp 430
+  config.h 120    Config + ConfigLoader
+  config.cpp 270
+  json.h 130      mj::Value 声明
+  json.cpp 420    极简 JSON 实现
+  mailbox.h 140   Mailbox<T> 线程安全队列(header-only)
+  keys.h 130      Action 枚举 + 绑定表 + Ctrl()/Alt()
+  keys.cpp 190
+  util.h 90 / util.cpp 230   字符串/路径/文件/时间/UTF-8
+tests/
+  test_json.cpp test_highlight.cpp test_diag.cpp test_sse.cpp test_proc.cpp  ~300
+```
+
+模块依赖(单向,无环):
+
+```
+main -> app -> {ui, editor, panel, ai, build, proc, config, keys}
+ui   -> {editor, panel, highlight, keys, util, app.h(仅 AppModel)}
+ai   -> {aihttp, config, textbuf, mailbox, json}
+build-> {proc, config, util}
+editor->{textbuf, highlight, util, ai.h(仅 AiSink 枚举)}
+aihttp->{json, config, util}
+config->{json, util}
+textbuf/highlight/panel/proc/json/util -> 仅 util 或无依赖
+```
+
+`json.h` 拆成 `.h`+`.cpp`(而非纯 header-only)是为了让 Wave 2 的多个 agent 能并行、且不拖慢每个 TU 的编译;"不引外部依赖"的要求仍然满足。
+
+---
+
+## 2. 核心数据结构
+
+### 2.1 文本缓冲区:行数组 + 逆操作日志
+
+`std::vector<std::string> lines_`,永远至少 1 行。理由:单文件 ICPC 源码不过几千行,插入/删除行的 O(n) memmove 完全不可感知;gap buffer / piece table 的复杂度换不来任何用户可感的收益,而且行数组让语法高亮、渲染、行号跳转都变直接。
+
+```cpp
+struct Pos { int line = 0; int col = 0; };   // col = 行内字节偏移(非显示列)
+bool operator==(Pos,Pos); bool operator<(Pos,Pos);
+struct Range { Pos a, b; };                  // 约定 a <= b(规范化后)
+
+enum class Lang : uint8_t { C, Cpp, Unknown };
+
+class TextBuffer {
+public:
+  TextBuffer();
+  void reset(std::vector<std::string> lines);
+  bool loadFile(const std::string& path, std::string& err);
+  bool saveFile(const std::string& path, std::string& err);   // 原子写:tmp + rename
+
+  int  lineCount() const;
+  const std::string& line(int i) const;     // 越界安全,返回空行静态量
+  int  lineLen(int i) const;                // 字节数
+  std::string text() const;
+  std::string textRange(const Range& r) const;
+
+  // 唯一两个改动存储的原语,二者都记录撤销
+  Pos insert(Pos at, const std::string& text);   // 处理 '\n' 拆行,返回结束位置
+  Pos erase(const Range& r);                     // 返回 r.a
+
+  void beginGroup(const char* label);
+  void endGroup();
+  struct Edit {                                   // RAII
+    Edit(TextBuffer& b, const char* label); ~Edit();
+  };
+  bool undo(Pos& cursorOut);
+  bool redo(Pos& cursorOut);
+
+  bool dirty() const;  void clearDirty();
+  int  revision() const;                    // 每次改动 +1 -> 高亮/AI 失效判据
+  const std::string& path() const;  void setPath(std::string p);
+  Lang lang() const;                        // 由扩展名推断
+};
+```
+
+**撤销:逆操作日志 + 分组。**
+
+```cpp
+struct UndoOp   { bool isInsert; Pos at; std::string text; };
+struct UndoGroup{ std::vector<UndoOp> ops; Pos cursorBefore, cursorAfter;
+                  int64_t stamp; const char* label; };
+```
+
+- `insert` 记录 `{isInsert=true, at, text}`;`erase` 记录 `{isInsert=false, at=r.a, text=被删内容}`。
+- 撤销 = 倒序遍历组内 ops,施加逆操作,期间**挂起日志记录**(`journaling_ = false`),同时把该组压入 redo 栈。
+- 合并规则:同组内连续单字符插入,若位置相邻、间隔 < 800ms、label 相同,则并入当前组;回车、光标移动、保存、剪切行等结构性操作立刻关闭当前组。
+- 任何新改动清空 redo 栈。撤销栈上限 2000 组,超出丢最旧。
+- 一次用户动作 = 一个 `TextBuffer::Edit` 作用域,所以"接受 ghost 插入 8 行"是一次撤销就回退干净。
+
+### 2.2 光标 / 视口
+
+光标 `Pos{line, byteCol}`,外加 `Editor::desired_display_col_`:上下移动时保持期望显示列,穿过短行再回到长行不会丢列——这是所有真编辑器的行为。
+
+显示列由 `util` 计算:Tab 展开到 `tab_width` 制表位,宽字符按 `wcwidth` 计 2。
+
+```cpp
+struct Viewport { int top = 0, left = 0, h = 0, w = 0; };
+```
+
+`ensureCursorVisible()`:纵向保留 2 行 scrolloff;横向按 8 列跳步滚动,光标距右边缘至少 4 列。**编辑区不折行**(长行横向滚动),避免"逻辑行 vs 视觉行"的全套复杂度;**面板折行**(中文 AI 输出必须折)。

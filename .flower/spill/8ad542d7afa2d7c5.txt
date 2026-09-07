@@ -1,0 +1,140 @@
+##### wave2-config.md
+75:## 未验证 / 风险
+76-1. `err` 的语义我定为“只装致命级说明”(文件缺失 / 读失败 / JSON 语法错 / 顶层非对象),
+77-   单字段类型错**不**写进 `err`,只进 `warnings`。若 main.cpp 作者期望 `err` 也带上字段级
+78-   问题,需要协调者定一句。
+79-2. clamp 的具体上下界是我定的(§7 没规定)。如果 UI 层对 `panel_height` 上限有更强假设
+80-   (比如必须小于终端高度),那是 `ui.cpp` 的 clamp 责任,这里只保证不是负数/不是 0。
+81-3. `run_output_limit` 上限 256 MiB 是为防 `size_t` 溢出与 OOM 拍的;若真有人要更大得改这里。
+82-4. `sampleJson()` 的往返自洽只依赖“自己能解析回来”,不依赖 `dump(2)` 的具体空白格式;
+83-   若 `json.cpp` 以后改缩进风格,本测试不会红,但 README 里贴的示例需要同步重新生成。
+84-5. 没有测“配置文件无读权限”(容器里以 root 跑,`chmod 000` 照样读得到),
+85-   该分支走的是 `util::readFile` 失败 → 全默认 + warning,与“读失败”同一条路径。
+
+##### wave2-highlight.md
+126:## 8. 遗留风险
+127-
+128-1. **原始字符串跨行是有意近似**(§3 已写明):自定义 delim 且体内含 `)"` 会提前结束。
+129-   已记为 README 限制。
+130-2. **未闭合字符串 + 行尾 `\`** 只置普通 `ST_CONTLINE`(下一行按代码扫描),
+131-   不是“字符串继续”。1 字节状态放不下第 4 种延续,且 ICPC 代码不会这么写。
+132-3. **数字后缀一律吞进 Number**:`1else` 会整体染成 Number(合法 C++ 里不存在这种写法)。
+133-4. `Span.start/len` 是 `int`:单行超过 2^31 字节才会溢出,不可能发生;10 万字符已测。
+134-5. 未闭合的 `'` 会把行尾染成 `Char`(如代码里孤立的撇号)。观感问题,不影响不变式。
+135-6. TSan 未跑(容器 ASLR 限制,Wave 1 已记录);`scanLine` 无可变共享状态,
+136-   `HighlightCache` 是非线程安全的普通对象,按设计只在 UI 线程用。
+
+##### wave2-json.md
+91:## 遗留风险
+92-1. **`at("a/0/b")` 路径查找没有实现** —— json.h 冻结版里没有这个签名,
+93-   加它必须改头。全仓 grep 也没有任何调用方(config.cpp / aihttp.cpp 用链式
+94-   `["a"][0]["b"]` 即可,越界安全)。若协调者确认要,需要在 json.h 加
+95-   `const Value& at(const std::string& path) const;`。
+96-2. 非法 UTF-8 字节序列按 json.h 的"原样透传"契约不做校验也不替换 —— 若上层
+97-   把非法 UTF-8 塞进字符串,dump 出的 JSON 在字节层面就不是合法 UTF-8
+98-   (ncurses 渲染侧需自行防护;DeepSeek 端到端不受影响,因为 API 回的是合法 UTF-8)。
+99-3. 错误串里的"列"是字节列;含中文的行报出来的列号会大于视觉列。
+100-4. `asNumber()` 对精确 int64(如 `9223372036854775807`)返回的是四舍五入后的
+101-   double(`9223372036854775808.0`)—— 这是 json.h "数字统一用 double 存"
+102-   的固有结果,要精确值必须用 `asInt64()`。
+103-5. 内存分配失败(bad_alloc)不在 no-throw 契约内 —— 那已是进程级问题。
+
+##### wave2-proc.md
+85:## 7. 遗留风险 / 未验证
+86-
+87-1. **macOS 上未实测**(本机是 Debian/aarch64)。只用了 POSIX:`pipe/fcntl(F_DUPFD_CLOEXEC)/poll/
+88-   dup2/setpgid/kill/waitpid/execvp/clock_gettime(CLOCK_MONOTONIC)`,`environ` 走 `_NSGetEnviron()`
+89-   分支 —— 这些在 macOS 10.12+ 全部可用,但**编译与行为都需要在 macOS 上再跑一次 test_proc**。
+90-2. `strerror()` 严格来说非线程安全(glibc/macOS 对已知 errno 返回静态常量串,实际安全);
+91-   没用 `strerror_r`,因为 GNU/XSI 两种签名会让跨平台代码更脏。
+92-3. 子进程关 fd 的循环上界把 `sysconf(_SC_OPEN_MAX)` 钳到 4096(本机 rlimit 是 1048576)。
+93-   若父进程真的持有 fd > 4096 且该 fd 非 CLOEXEC,它会漏进子进程。`spawnMutex()` 已消除我们
+94:   自己造成的这种漏,但别的模块若开了 4096+ 个 fd 仍有理论风险。
+95-4. pid 回收:`killInFlight()` 读原子 pgid 后 kill,`runProcess` 在 `waitpid` 成功后立刻把它清 0,
+96-   窗口只有几条指令(且期间子进程是僵尸,pid 不会被复用)。理论上不可能完全归零。
+97-5. `~Runner()` 会 SIGKILL 在飞作业(否则退出会卡满 `timeout_ms`)。这是我加的语义,
+98-   文档只写了"close 队列并 join"。**若协调者认为退出时应等作业跑完,请告知**。
+99-6. `summary()` 的截断后缀采用 `proc.h` 注释里的 `" · 输出已截断"`(任务书里写的是
+100-   `(输出已截断)`,两者冲突,以冻结的头文件注释为准);`SpawnFailed` 的摘要是
+101-   `"无法启动:<spawn_error>"`,文档没给样例,如需改文案只动 `ProcResult::summary()` 即可。
+102-7. `Runner::busy()` 返回 `busy_ || !jobs_.empty()`(排队中也算忙),文档未明确,按 UI 语义选的。
+
+##### wave2-textbuf.md
+85:## 遗留风险
+86-
+87-- **权限失败分支未在本环境实测**:容器里 uid=0,`/proc` 那条不可写路径测试被跳过。
+88-  已用"父目录不存在"(ENOENT)和"目标是目录"(rename EISDIR)覆盖 `saveFile` 的失败
+89-  返回路径,与 uid 无关。真实 macOS 上的 EACCES 走的是同一段 `open` 失败分支。
+90-- **`noteCursorAfter()` 落到 `undo_.back()`**:如果 Editor 在 `Edit` 作用域结束后很久
+91-  才调它,可能写到"上一组"的 `cursorAfter` 上。只影响撤销后的光标落点,不影响内容。
+92-- `saveFile()` 只 `fsync` 文件本身,不 `fsync` 目录项;掉电语义弱于严格的原子写,
+93-  但对编辑器场景(§13 已知限制)足够。
+94-- `text()` 每次都是全量拷贝(高亮/AI 快照会频繁调)。几千行规模无所谓,若 Wave 4 发现
+95-  它进了热路径,再加缓存(不影响接口)。
+
+##### wave2-util.md
+100:## 4. 遗留风险
+101-
+102-- 内置兜底宽度表是 East Asian Width 的**子集**（覆盖 CJK/假名/谚文/全角/常见 emoji/
+103-  常见组合符）。只有在 locale 不是 UTF-8 时才会被用到；此时冷僻脚本可能算 1 列。
+104-  正常运行路径（setlocale 成功）走系统 `wcwidth`，不受影响。
+105-- emoji 的 ZWJ 序列 / 肤色修饰 / 区域指示符（国旗）按各码点分别计宽，
+106-  终端实际渲染可能只占 2 列 —— 这是所有终端编辑器的共同问题，`wcwidth` 层面无解。
+107-- `displayWidth` 在超长行上把列钳到 `1<<28` 防 int 溢出;正常行远达不到。
+108-- 文件相关测试依赖 `/tmp` 可写、`rm -rf` 可用。
+
+##### wave3-aihttp.md
+99:## 已知限制 / 风险
+100-
+101-1. **DNS 解析耗时是 `send()` 的下限**(实测,libcurl 8.14.1 + 线程化解析器):
+102-   `Curl_resolver_kill()` 会 join 解析线程,所以 `CURLOPT_TIMEOUT_MS` 打不断一次
+103-   正在进行的 `getaddrinfo`。本机冷缓存 ~3.2s、热缓存 ~2ms。两条硬性保证不受影响:
+104-   `send()` 一定会返回;它只在 worker 线程跑,UI 输入不卡。
+105-   建议写进 README 的"已知限制"。
+106-2. `SseParser` 的 carry 有 32MiB 上限(防服务端永不发空行把内存吃光)。
+107-   超过上限会丢弃残帧 —— 此时"输出与分片无关"这条不再保证。真实响应远小于此,
+108-   测试里最大单帧 1MiB。
+109-3. HTTP body 累积上限 32MiB;流式模式只为诊断保留 body 前 4KiB。
+110-4. 本层不解析流式响应末帧的 `usage`(`prompt_tokens`/`completion_tokens` 在流式下
+111-   保持 0)。非流式路径正常填充。上层若要显示 token 数需注意。
+112-5. `chatErrorZh` 把 403 也映射成"API key 无效或已过期"(实践中 403 多为 key 权限问题)。
+113-   如果协调者认为 403 应有独立文案,需要改一行。
+114-6. Makefile 的 test 目标由别的 agent 维护;我的测试用 `#include "../src/aihttp.h"`,
+115-   不依赖 `-Isrc`。链接需要 `-lcurl -lpthread`(Makefile 里已有)。
+116-   `test_aihttp.cpp` 额外用了 POSIX socket(起本地 mini HTTP server)与 `<thread>`。
+
+##### wave3-build-keys.md
+191:## 8. 遗留风险
+192-
+193-1. **`KEY_*` 数值硬编码**:靠 test_keys.cpp 的 `static_assert` 把关。若 macOS 自带 curses
+194-   的 `KEY_SHOME`/`KEY_SEND`/`KEY_BTAB` 与 Debian ncurses 不同,那三条 static_assert 会在
+195-   macOS 上编译期失败(这正是想要的行为:当场发现,而不是"某个键没反应")。方向键、F 键、
+196:   Home/End/PgUp/PgDn/DC/RESIZE 这些自 BSD curses 起就未变过,风险集中在 S* 系列。
+197-2. **不绑 `Ctrl-H`(8)** 是 §8.2 的硬规定。某些终端(把 Backspace 配成"发送 Control-H"的
+198-   iTerm2 配置)下退格会失灵。`keypad(stdscr, TRUE)` 下 ncurses 一般给 `KEY_BACKSPACE`,
+199-   暂按规定不绑;若用户报此问题,需协调者决定是否放宽。
+200-3. **`Alt-←/→` 依赖终端把 Option 发成 Esc 前缀**。Terminal.app / iTerm2 默认如此,
+201-   但配成 CSI 修饰符(`ESC[1;3D`)的终端下 ncurses 认不出,按词移动会失效。
+202-   这是 §8.2 已知的取舍,不是本实现的缺陷;`--doctor` 打印实际键码正是为了让用户自查。
+203-4. **诊断解析对"路径里含 `:<数字>:`"会误判行号**(见 §5 已知行为)。需求只管单文件编辑,
+204-   源文件路径一般来自用户自己敲的参数,可接受;测试里已把行为固定下来防止无声变化。
+205-5. **`runSpec` 的 `cwd` 留空**(继承编辑器的工作目录),不是源文件所在目录。
+206-   用户程序里 `fopen("data.txt")` 会相对于启动 cppide 的目录。若 Wave 4/5 认为应该
+207-   改成源文件目录,只需改 `runSpec` 一行,但那会影响 `--doctor`/README 的描述。
+208-6. **未在 macOS 上验证**(本机 Debian/aarch64)。涉及平台差异的点:`$TMPDIR`
+209-   (已用 `util::tempDir()`,测试里 setenv 成 `/var/folders/xy/T` 验过前缀与去重复斜杠)、
+210-   `KEY_S*` 数值、clang 的诊断格式(格式与 gcc 一致,已按 `N | ` 前缀挡回显行)。
+211-7. `gen-diag-samples.py` 采集的 `kLinkError` 样本里含一个随机的临时 `.o` 名
+212-   (`/tmp/ccUM5t2z.o`),重新生成样本会变。测试不依赖那一行(它不是诊断),但重新生成后
+213-   若有断言对不上,先看是不是 g++ 版本变了。
+
+##### wave3-editor.md
+117:## 6. 遗留风险
+118-
+119-1. `copyLine()` 的语义按 §2.3 取“复制到剪贴板”。若 keymap 作者预期的是“重复当前行”,
+120-   需要协调者裁定 —— 改动只涉及 `Editor::copyLine()` 一个函数。
+121-2. `scrollBy()` 会把光标拉进可见区(而不是让光标留在屏外)。这是为了让 `ui.cpp`
+122-   永远不必处理“光标在视口外”的屏幕行号。若 UI 期望“滚动不动光标”,需协调。
+123-3. 词移动把所有 `>= 0x80` 的码点归为“词”,所以中文标点与汉字算同一类,
+124-   一整段中日韩文本会被当成一个词跨过。真编辑器会按 Unicode 断词,这里刻意不做。
+125-4. 反向 `find` 的“上一处”定义为“起点严格小于光标列”。若与 keys/app 的 FindPrev

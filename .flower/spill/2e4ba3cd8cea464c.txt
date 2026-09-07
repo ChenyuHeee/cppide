@@ -1,0 +1,124 @@
+void Ui::drawStatus(const AppModel& m) {
+  const Rect& r = layout_.status;
+  if (r.empty()) return;
+  const int tab_w = tabWidthOf(m);
+  const int bar = theme_.has_color && theme_.pairs > Theme::P_StatusBar
+                      ? A(COLOR_PAIR(Theme::P_StatusBar))
+                      : A(A_REVERSE);
+  fillRow(r.y, r.x, r.w, bar);
+
+  const bool practice = (m.ai_mode == AiMode::Practice);
+
+  // 1) 模式徽章:固定在最左格 + 反色 + 配色(文字/颜色/位置三重冗余)
+  std::string badge = " ";
+  badge += aiModeZh(m.ai_mode);
+  badge += " ";
+  const int badge_w = std::min(util::displayWidth(badge, tab_w, 0), r.w);
+  putStr(r.y, r.x, badge_w, badge, theme_.modeAttr(practice), tab_w, theme_);
+
+  // 右端:F1帮助(固定位置,永不被挤掉)
+  const std::string help = "F1帮助";
+  const int help_w = util::displayWidth(help, tab_w, 0);
+  int right_x = r.x + r.w;
+  if (r.w - badge_w > help_w + 2) {
+    right_x = r.x + r.w - help_w;
+    putStr(r.y, right_x, help_w, help, bar | A(A_BOLD), tab_w, theme_);
+  }
+
+  // 2) 中间字段:左 -> 右,放不下就从优先级最低的开始丢
+  // prio 小 = 空间不够时先丢;order = §8.1 规定的左->右次序(重新放回时用它复位)
+  struct Field { std::string text; int attr; int prio; int order; };
+  std::vector<Field> fs;
+  int ord = 0;
+
+  std::string fname = m.file_name.empty() ? std::string("未命名") : m.file_name;
+  if (m.file_dirty) fname += "*";
+  fs.push_back({fname, bar | A(A_BOLD), 90, ord++});
+
+  char pos[48];
+  std::snprintf(pos, sizeof(pos), "%d:%d", m.cursor_line, m.cursor_col);
+  fs.push_back({pos, bar, 80, ord++});
+
+  if (!m.lang_zh.empty()) fs.push_back({m.lang_zh, bar, 20, ord});
+  ++ord;
+
+  // 上次构建结果;有临时消息时让临时消息占这个位置(它更要紧)
+  if (!m.status_msg.empty()) {
+    int a = bar;
+    if (m.errors > 0) a = theme_.has_color ? A(COLOR_PAIR(Theme::P_Error) | A_BOLD)
+                                           : A(A_REVERSE | A_BOLD);
+    fs.push_back({m.status_msg, a, 60, ord});
+  } else if (!m.build_summary_zh.empty()) {
+    int a = bar;
+    if (m.errors > 0) a = bar | A(A_BOLD);
+    else if (m.warnings > 0) a = bar | A(A_BOLD);
+    fs.push_back({m.build_summary_zh, a, 40, ord});
+  }
+  ++ord;
+
+  // AI 状态:就绪 / 思考中… / 未配置 / 错误
+  {
+    const char* zh = (m.ai_state_zh && *m.ai_state_zh) ? m.ai_state_zh : nullptr;
+    if (!zh) {
+      switch (m.ai_state) {
+        case AiState::Disabled: zh = "未配置"; break;
+        case AiState::Idle:     zh = "就绪";   break;
+        case AiState::Thinking: zh = "思考中…"; break;
+        case AiState::Error:    zh = "错误";   break;
+      }
+    }
+    std::string s = "AI ";
+    s += zh;
+    fs.push_back({s, bar, 50, ord++});
+  }
+
+  // 运行中:§4.2 第三道防线的可见提示,优先级仅次于徽章
+  if (m.running)
+    fs.push_back({"运行中… Esc 终止", bar | A(A_BOLD) | A(A_UNDERLINE), 95, ord++});
+
+  const std::string sep = sepFor(theme_);
+  const int sep_w = util::displayWidth(sep, tab_w, 0);
+  int avail = right_x - (r.x + badge_w) - 1;
+  if (avail < 0) avail = 0;
+
+  // 丢字段:反复找当前 prio 最小的丢掉,直到装得下
+  std::vector<Field> dropped;
+  for (;;) {
+    int need = 0;
+    for (size_t i = 0; i < fs.size(); ++i)
+      need += util::displayWidth(fs[i].text, tab_w, 0) + sep_w;
+    if (need <= avail || fs.empty()) break;
+    size_t victim = 0;
+    for (size_t i = 1; i < fs.size(); ++i)
+      if (fs[i].prio < fs[victim].prio) victim = i;
+    dropped.push_back(fs[victim]);
+    fs.erase(fs.begin() + static_cast<long>(victim));
+  }
+  // 丢完还剩下空间的话,把最后被丢掉的那个(= 被丢者里优先级最高的)
+  // 截断后放回去 —— 否则常见的 80 列终端上"上次构建结果"会整条消失。
+  if (!dropped.empty()) {
+    int used = 0;
+    for (size_t i = 0; i < fs.size(); ++i)
+      used += util::displayWidth(fs[i].text, tab_w, 0) + sep_w;
+    const int room = avail - used - sep_w;
+    if (room >= 3) {
+      Field f = dropped.back();
+      f.text = fitDisplay(f.text, room, tab_w);
+      fs.push_back(f);
+      std::stable_sort(fs.begin(), fs.end(),
+                       [](const Field& a2, const Field& b2) { return a2.order < b2.order; });
+    }
+  }
+
+  int x = r.x + badge_w;
+  for (size_t i = 0; i < fs.size(); ++i) {
+    if (x >= right_x) break;
+    putStr(r.y, x, right_x - x, sep, bar, tab_w, theme_);
+    x += sep_w;
+    if (x >= right_x) break;
+    const std::string t = fitDisplay(fs[i].text, right_x - x, tab_w);
+    const int w = util::displayWidth(t, tab_w, 0);
+    putStr(r.y, x, right_x - x, t, fs[i].attr, tab_w, theme_);
+    x += w;
+  }
+}

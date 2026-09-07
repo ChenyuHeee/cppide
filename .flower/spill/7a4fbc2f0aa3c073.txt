@@ -1,0 +1,120 @@
+153:// 全部承认的顶层键。以 '_' 开头的键一律视为注释(sampleJson 就是这么标注说明的)。
+154-const char* const kKnownKeys[] = {
+155-    "api_key", "base_url", "chat_path", "model", "stream",
+156-    "ghost_delay_ms", "ghost_min_interval_ms", "ghost_max_lines",
+157-    "ai_connect_timeout_ms", "ai_timeout_ms", "ai_max_context_lines",
+158-    "max_tokens_code", "max_tokens_practice", "temperature_code", "temperature_practice",
+159-    "prompt_code", "prompt_practice",
+160-    "cc", "cxx", "cflags", "cxxflags", "compile_timeout_ms",
+161-    "run_timeout_ms", "run_output_limit", "stdin_file",
+162-    "tab_width", "expand_tab", "auto_indent", "show_line_numbers", "panel_height", "tick_ms",
+163-};
+164-
+165-bool isKnownKey(const std::string& k) {
+166-  if (!k.empty() && k[0] == '_') return true;  // 注释键
+167-  for (const char* known : kKnownKeys)
+168-    if (k == known) return true;
+169-  return false;
+170-}
+171-
+172-void applyObject(const mj::Value& o, Config& c) {
+173-  // ---- AI ----
+174-  takeStr(o, "api_key", c.api_key, true, c);
+175-  takeStr(o, "base_url", c.base_url, true, c);
+176-  takeStr(o, "chat_path", c.chat_path, true, c);
+177-  takeStr(o, "model", c.model, true, c);
+178-  takeBool(o, "stream", c.stream, c);
+179-  takeInt(o, "ghost_delay_ms", c.ghost_delay_ms, 0, 60000, c);
+180-  takeInt(o, "ghost_min_interval_ms", c.ghost_min_interval_ms, 0, 600000, c);
+181-  takeInt(o, "ghost_max_lines", c.ghost_max_lines, 1, 200, c);
+182-  takeInt(o, "ai_connect_timeout_ms", c.ai_connect_timeout_ms, 100, 300000, c);
+183-  takeInt(o, "ai_timeout_ms", c.ai_timeout_ms, 100, 600000, c);
+184-  takeInt(o, "ai_max_context_lines", c.ai_max_context_lines, 1, 100000, c);
+185-  takeInt(o, "max_tokens_code", c.max_tokens_code, 1, 32768, c);
+186-  takeInt(o, "max_tokens_practice", c.max_tokens_practice, 1, 32768, c);
+187-  takeDouble(o, "temperature_code", c.temperature_code, 0.0, 2.0, c);
+188-  takeDouble(o, "temperature_practice", c.temperature_practice, 0.0, 2.0, c);
+189-  takeStr(o, "prompt_code", c.prompt_code, false, c);
+190-  takeStr(o, "prompt_practice", c.prompt_practice, false, c);
+191-  // ---- 编译 ----
+192-  takeStr(o, "cc", c.cc, true, c);
+193-  takeStr(o, "cxx", c.cxx, true, c);
+194-  takeStrArray(o, "cflags", c.cflags, c);
+195-  takeStrArray(o, "cxxflags", c.cxxflags, c);
+196-  takeInt(o, "compile_timeout_ms", c.compile_timeout_ms, 1000, 600000, c);
+197-  // ---- 运行 ----
+198-  takeInt(o, "run_timeout_ms", c.run_timeout_ms, 100, 600000, c);
+199-  takeSize(o, "run_output_limit", c.run_output_limit, 1024.0, 268435456.0, c);
+200-  takeStr(o, "stdin_file", c.stdin_file, true, c);
+201-  // ---- 编辑器 ----
+202-  takeInt(o, "tab_width", c.tab_width, 1, 16, c);
+203-  takeBool(o, "expand_tab", c.expand_tab, c);
+204-  takeBool(o, "auto_indent", c.auto_indent, c);
+205-  takeBool(o, "show_line_numbers", c.show_line_numbers, c);
+206-  takeInt(o, "panel_height", c.panel_height, 3, 100, c);
+207-  takeInt(o, "tick_ms", c.tick_ms, 10, 1000, c);
+208-
+209-  // 空串在这几个字段上是“配了但配空了”,必须回落,否则会 exec("") / 请求空 URL。
+210-  const Config d;
+211-  if (c.base_url.empty()) {
+212-    warn(c, fieldPrefix("base_url") + "为空,已改用默认值 " + d.base_url + "。");
+213-    c.base_url = d.base_url;
+214-  }
+215-  if (c.chat_path.empty()) {
+216-    warn(c, fieldPrefix("chat_path") + "为空,已改用默认值 " + d.chat_path + "。");
+217-    c.chat_path = d.chat_path;
+218-  }
+219-  if (c.cc.empty()) {
+220-    warn(c, fieldPrefix("cc") + "为空,已改用默认值 " + d.cc + "。");
+221-    c.cc = d.cc;
+222-  }
+223-  if (c.cxx.empty()) {
+224-    warn(c, fieldPrefix("cxx") + "为空,已改用默认值 " + d.cxx + "。");
+225-    c.cxx = d.cxx;
+226-  }
+227-  if (!c.stdin_file.empty()) c.stdin_file = util::expandUser(c.stdin_file);
+228-
+229-  for (size_t i = 0; i < o.size(); ++i) {
+230-    const std::string& k = o.key(i);
+231-    if (!isKnownKey(k)) warn(c, "配置中有无法识别的字段 \"" + k + "\",已忽略。");
+232-  }
+233-}
+234-
+235-// 环境变量优先级最高(便于临时切换而不改文件)。空值等同于未设置。
+236-void applyEnv(Config& c) {
+237-  std::string k = util::trim(util::envOr("CPPIDE_API_KEY", ""));
+238-  if (k.empty()) k = util::trim(util::envOr("DEEPSEEK_API_KEY", ""));
+239-  if (!k.empty()) c.api_key = k;  // 注意:不写进任何 warning
+240-  const std::string m = util::trim(util::envOr("CPPIDE_MODEL", ""));
+241-  if (!m.empty()) c.model = m;
+242-  const std::string b = util::trim(util::envOr("CPPIDE_BASE_URL", ""));
+243-  if (!b.empty()) c.base_url = b;
+244-}
+245-
+246-// key 只允许可见 ASCII:粘贴时带进来的换行/空格/中文引号会让 HTTP 头非法,
+247-// 与其让 libcurl 在运行期报怪错,不如现在就丢掉并提示重贴。
+248-// 只看字符类别,不看内容,更不把内容写进消息。
+249-bool keyLooksSane(const std::string& s) {
+250-  for (unsigned char ch : s)
+251-    if (ch < 0x21 || ch > 0x7e) return false;
+252-  return true;
+253-}
+254-
+255-}  // namespace
+256-
+257-std::string Config::chatUrl() const {
+258-  std::string b = util::trim(base_url);
+259-  std::string p = util::trim(chat_path);
+260-  while (!b.empty() && b.back() == '/') b.pop_back();
+261-  size_t i = 0;
+262-  while (i < p.size() && p[i] == '/') ++i;
+263-  p.erase(0, i);
+264-  if (p.empty()) return b;
+265-  if (b.empty()) return "/" + p;
+266-  return b + "/" + p;
+267-}
+268-
+269-std::string ConfigLoader::defaultPath() {
+270-  const std::string env = util::trim(util::envOr("CPPIDE_CONFIG", ""));
+271-  if (!env.empty()) return util::expandUser(env);
+272-  const std::string xdg = util::trim(util::envOr("XDG_CONFIG_HOME", ""));

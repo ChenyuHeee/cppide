@@ -1,0 +1,157 @@
+## 3. 任务 C:`Ctrl-F` 查找 与 `F1` 帮助浮层
+
+先 grep 确认现状:两者**都已实现**(`app.cpp:289` Find / `app.cpp:1078` 提交 /
+`editor.cpp:600` `Editor::find` 带回绕 / `app.cpp:1016` 无诊断时 `Ctrl-N/P` 退化为
+查找下一处/上一处 / `ui.cpp` 的 `drawHelp` + `keys.cpp::helpLines`)。
+于是任务 C 主要是**实测 + 补一个真实缺口**。
+
+**实测**(`wave5-c-find-help.txt`,样本第 5/40/120 行有 `NEEDLE_TARGET`,33 条断言全过):
+
+```
+Ctrl-F -> PASS "查找"(中文标签)
+输入 needle + Enter -> PASS "找到" / PASS 光标 "5:5"
+Ctrl-N -> "40:5" -> Ctrl-N -> "120:5" -> Ctrl-N -> "5:5"(自动回绕一圈)
+Ctrl-P -> "120:5"(反向)
+查一个不存在的串 -> PASS "未找到"
+Ctrl-F 后按 Esc -> 提示行取消且**光标没动**("120:5" 不变)
+F1 -> PASS "cppide 帮助" / 页码 / 页脚
+连翻各页 -> PASS Ctrl-O / Ctrl-B / Ctrl-T / Alt-1 / Ctrl-C / 终止编译作业 全部出现过
+F1 再按 -> 关闭,状态栏 "F1帮助" 回来、编辑区内容重新可见
+F1 -> Esc 关闭 OK;60x16 下打开/关闭不崩、光标合法;任意键关闭且**不改缓冲区**
+== 全部通过 ==(失败 0 条)
+```
+
+**补齐的缺口:帮助浮层在 80x24 上只能显示 1/4 的内容。**
+`helpLines()` 有 71 行(最宽 76 显示列),80x24 的浮层内部只有 19 行,原实现直接
+截断并写一句"…(终端太矮,帮助未显示完)" —— 也就是说标准终端上用户**永远看不到**
+`Ctrl-O` / `Alt-1` 这些键。现在:
+
+1. **分页**:底部写 `第 X/Y 页 · 再按一下 F1 看下一页 · 完整列表见 cppide --help`,
+   标题栏也带页码。80x24 = 4 页。
+   翻页状态放在 `Ui` 的 private 成员(`help_page_` / `help_was_visible_`)——
+   `AppModel` 已被协调者裁决冻结,App 没有通道把页码告诉渲染层;于是复用现有的
+   "帮助浮层任意键关闭"行为:**关掉时页码 +1**,所以"连按两下 F1"就是下一页。
+2. **条件分栏**:只有"每栏都放得下最宽那行"时才分栏(`inner_w / (content_w + 2)`,上限 3 栏)。
+   为什么这么保守 —— 第一版按"每栏至少 24 列"硬分,80 列下分 2 栏,
+   `(编译进行中 Esc = 终止编译作业)` 这种带缩进的续行被整条截没,pty 断言直接抓到了。
+   现在 80x24 保持单栏 4 页,≥160 列的宽终端才会真用上 2 栏。
+
+---
+
+## 4. 这一轮修掉的两个真 bug(都不在任务清单里,是实测撞出来的)
+
+### (1) 方向键在非 DECCKM 模式下会往缓冲区插字母
+
+**症状**:pty 里发 `ESC [ B`,编辑区里多一个字母 `B`(光标 `1:1 -> 1:4`),
+发 `ESC O B` 才是下移。
+
+**原因链**:`keypad(stdscr, TRUE)` 输出 smkx(`\E[?1h\E=`)把终端切到 application
+cursor keys 模式,此时终端发 `ESC O A/B/C/D`;而 `xterm-256color` 的 terminfo
+**只登记了这一套**(`kcuu1=\EOA`)。一旦终端不理 smkx(某些 tmux/screen 配置、
+精简终端、把方向键塞进宏或粘贴),它发的是 `ESC [ A`,ncurses 认不出 -> 返回裸 27 ->
+落进 `ui.cpp` 的 Alt 合成 -> 得到 `Alt-'['`,紧跟的 `A` 被当普通字符**插进缓冲区**。
+
+**修法**:`ui.cpp::registerCsiCursorKeys()`(在 `Ui::init` 里调),用 ncurses 的
+`define_key` 把 `ESC[A/B/C/D/H/F`、`ESC[1~`、`ESC[4~` 与 `ESC O A/B/C/D/H/F`
+两套都登记上。`define_key` 是 ncurses 扩展,用 `#if defined(NCURSES_VERSION)` 兜住。
+
+**回归脚本**:`.flower/scripts/wave5-keyprobe-cursor.txt`
+```
+\e[B ×3 -> PASS 4:1        (修之前是 1:4)
+\eOB ×2 -> PASS 6:1
+\e[6~   -> PASS 17:1       \e[5~ -> PASS 6:1
+PASS expectnot "keys.cpp*"  # 方向键一个字母都没插进去,缓冲区没变脏
+```
+
+### (2) 命名管道让启动阶段永久挂死
+
+见 §1 A②。`mkfifo x.cpp && cppide x.cpp` 修前 `timeout` 报 124。
+已修 + 已进跨模块约定 §20 + `tests/test_openpath.cpp::case_reject_fifo`(带 8s 超时)。
+
+---
+
+## 5. pty 驱动器的增强(可复用)
+
+`.flower/scripts/wave5-pty-drive.cpp`(基于 wave4 版),新增脚本命令:
+
+| 命令 | 用途 |
+|---|---|
+| `resize <行>x<列>` | `ioctl(TIOCSWINSZ)` + 补一发 SIGWINCH |
+| `resizestorm <n> <RxC> <RxC> [pace_ms]` | 两尺寸间来回切 n 次;不给 pace = 尽可能快 |
+| `cursorin <行> <列>` | 断言原始流里最后一个 CUP 落在该尺寸内 |
+| `nocorrupt` | 断言原始流里所有非转义字节构成合法 UTF-8(花屏检测) |
+| `rss <标签>` | 打印子进程当前 RSS 与峰值 `VmHWM` |
+| `bench <n> <转义串>` | 重复 n 次"发键 -> 等输出静默 30ms",报单帧耗时分位数 |
+| `expectlast <文本>` | 只在最近 200KB 里找(wave4 文档里写了但没实现) |
+| `expectnotfrom <文本>` | 只在最后一个 mark 之后断言"没有出现"(判提示是否消失) |
+| `sendfile <路径>` / `repeat <n> <转义串>` | 灌大输入 / 连按同一个键 |
+
+### 写 pty 断言必须知道的五个坑(全部踩过)
+
+1. **`mark` 要放在"发按键"之前**。它记的是此刻已收到的字节数;放在 `wait` 之后
+   会把要断言的那一屏刷新圈到 mark 前面去,断言必然失败。
+2. **断言整串文本前先 `send \x0c`(Ctrl-L)**。ncurses 是增量重绘,逐字打进去的
+   `abc` 在过滤后的屏幕文本里是 `a<空格>b<空格>c`(每个字符后面跟着转义序列),
+   整串永远匹配不上。Ctrl-L 强制全量重画之后才是连续的。
+3. **`expect` / `expectfrom` 的参数是原样子串**,`\s` `\xNN` 只有 `send` 会解释。
+4. **横向滚动会把行内容切掉**。光标在第 54 列时编辑区已右滚,屏幕上只剩行尾片段 ——
+   断言"跳到了哪一行"用状态栏的 `行:列` 比用行内容可靠。
+5. **帮助浮层开着时不一定发新的 CUP**(`ui.cpp` 走 `curs_set(0)` + `wmove(0,0)`),
+   `cursorin` 必须在关掉浮层之后测;而且**不能靠"再按一次 F1"数开关奇偶** ——
+   一次 write 里连发两个 `ESC O P` 可能只算一次按键(实测 12 次 F1 之后浮层还是开着的)。
+   用 Ctrl-L 收尾最稳:开着时它当"任意键"关掉浮层,关着时只是重绘。
+
+---
+
+## 6. 未验证 / 风险 / 留给下一轮
+
+1. **macOS 一次都没跑过**。本轮全部在 Debian aarch64 + ncursesw 6.5 上。
+   与 macOS 相关的具体不确定项:`define_key` 在 Apple 自带 ncurses(5.7 系)上存在但
+   行为未验证;Terminal.app 的 `kf1` 可能是 `\E[11~` 而不是 `\EOP`(F1 打不开帮助的话
+   用 `Ctrl-L` 之外的键位或看 `--doctor`);`brew --prefix ncurses` 分支未走过。
+2. **默认配置下输出 > 8MB 的程序看不到退出码**(`hard_kill_bytes = max(8MB, 4×run_output_limit)`
+   会先 SIGKILL 它)。这是 §4.2 的防挂死设计,但用户可能困惑。
+   缓解办法是把 `run_output_limit` 调大;是否要在面板里加一句"如需完整输出请调大
+   run_output_limit"由协调者定。
+3. **帮助浮层的翻页方式偏怪**:必须"连按两下 F1"才到下一页(因为 `AppModel` 冻结,
+   没有通道传页码)。正规做法是让浮层吃掉 ↑/↓/PgDn 并把 scroll 传给 Ui —— 那需要
+   给 `AppModel` 加一个 `int help_scroll` 或给 `ui.h` 加一个公开方法。**要不要做请协调者裁决。**
+4. **`Ctrl-N` 的双重语义**:有编译诊断时是"下一个诊断",没有时才是"查找下一处"。
+   §8.2 就是这么规定的,但用户在"刚编译过 + 又想查找"时会觉得 Ctrl-N 不听话。
+5. **A⑤ 的定论只覆盖 /tmp**。/work 在 FUSE 上,退出时的写盘慢是环境属性;
+   如果协调者想要"在 FUSE 上也 100 次不卡"的证据,可以把
+   `wave5-exit-loop 100 10000 ./cppide <FUSE 上的文件>` 再跑一遍(本轮没跑)。
+6. **B③ 的 100MB 场景峰值 212 MiB**。对 ICPC 训练机来说没问题,但如果哪天要在
+   内存很紧的机器上跑,`ProcResult` 全量持有 stdout 这一点会是瓶颈(改法是流式落盘,
+   不在本轮范围)。
+7. `tests/test_openpath.cpp` **依赖已构建好的 `./cppide`**(找不到就整体跳过并打印说明),
+   而 `make tests` 并不依赖 `$(BIN)`。先 `make` 再 `make tests` 才能真正跑到它。
+8. `tests/test_ai.cpp` 里原有的用例会用**假 key** 打真实 `api.deepseek.com` 拿 401
+   (无网络时自动跳过)。不是本轮引入的,但记在这里:离线环境下 `make tests` 仍然通过。
+
+---
+
+## 7. 顺手清掉的一件脏事:`make tests` 会在仓库根目录留 core 文件
+
+**症状**:每跑一次 `make tests`,`/work/` 里就多一个 `core`(430KB 或 2MB,随机哪个)。
+
+**定位**(`readelf -n /work/core` 读 `NT_FILE` / `NT_PRPSINFO`):
+* 430KB 那个来自 `/bin/sh -c "kill -SEGV $$"` —— `tests/test_proc.cpp::t_signaled`
+  故意用 SIGSEGV 验证"被信号终止"的汇报;
+* 2MB 那个来自 `/tmp/test_editor` —— `tests/test_editor.cpp::testSetGhostAssertFires`
+  故意 fork 一个注定 `assert` 失败(SIGABRT)的子进程。
+
+两者都是**有意为之的测试手法**,问题只在于本机 `/proc/sys/kernel/core_pattern == "core"`,
+内核把 core 落在**子进程的 cwd**,而那正好是仓库根目录。
+
+**修法**(只改测试,不动 `proc.cpp` 的行为):
+* `t_signaled`:`spec.cwd = "/tmp"` + 脚本里先 `ulimit -c 0`;
+* `testSetGhostAssertFires`:子进程里 `setrlimit(RLIMIT_CORE, {0,0})` 之后再触发 assert。
+
+验证:`rm -f /work/core && make tests` → rc=0、16 个测试全过、`/work/core` 不再出现。
+
+**留给协调者的一个判断**:用户自己的程序被 `Ctrl-R` 跑崩时,也会在**用户的项目目录**里
+留下 `core`(需求明确"不做调试器集成",所以那个 core 没人会用)。
+要不要在 `proc.cpp` 的 fork 子进程里统一 `setrlimit(RLIMIT_CORE, 0)`?
+我没有擅自改 —— 那会改变已通过 ASan 的 `proc.cpp` 的行为,而且"要不要保留 core"
+算产品决定。**请裁决。**

@@ -1,0 +1,113 @@
+total 8
+drwxr-xr-x  6 root root  192 Sep  6 16:54 .
+drwxr-xr-x  1 root root 4096 Sep  6 16:07 ..
+drwxr-xr-x  7 root root  224 Sep  6 16:15 .flower
+-rw-r--r--  1 root root 2809 Sep  6 16:54 Makefile
+drwxr-xr-x  4 root root  128 Sep  6 16:57 runs
+drwxr-xr-x 17 root root  544 Sep  6 16:51 src
+6236 src/util.h
+     1	// util.h —— 字符串 / 路径 / 文件 / 时间 / UTF-8 与显示宽度工具
+     2	//
+     3	// 契约:
+     4	//   * 本头文件不依赖任何项目内其它头,只用标准库 —— 它是依赖图的叶子。
+     5	//   * 所有函数都是纯函数或只做一次系统调用,可在任意线程调用(无全局可变状态)。
+     6	//   * 所有“列”概念区分两种:
+     7	//       - 字节列(byte col):std::string 内的下标,Pos::col 用的就是它;
+     8	//       - 显示列(display col):终端上占的格子数,Tab 展开到制表位、宽字符算 2。
+     9	//     两者的换算只允许经由本文件的 byteToDisplayCol / displayColToByte。
+    10	#pragma once
+    11	
+    12	#include <cstddef>
+    13	#include <cstdint>
+    14	#include <string>
+    15	#include <vector>
+    16	
+    17	namespace util {
+    18	
+    19	// ---------------------------------------------------------------- 时间
+    20	// 单调时钟毫秒(steady_clock),用于所有超时/节流判定。不可用于显示时刻。
+    21	int64_t nowMs();
+    22	// 墙上时钟毫秒(system_clock),仅用于给面板消息打时间戳。
+    23	int64_t nowEpochMs();
+    24	// 把墙上时钟毫秒格式化成 "14:03:27"。
+    25	std::string formatTimeHMS(int64_t epoch_ms);
+    26	// 把毫秒格式化成人类可读:"12ms" / "1.4s"。
+    27	std::string formatDuration(int64_t ms);
+    28	
+    29	// ---------------------------------------------------------------- 字符串
+    30	std::string trim(const std::string& s);        // 去两端空白
+    31	std::string trimLeft(const std::string& s);
+    32	std::string trimRight(const std::string& s);
+    33	bool startsWith(const std::string& s, const std::string& pre);
+    34	bool endsWith(const std::string& s, const std::string& suf);
+    35	std::string toLower(std::string s);
+    36	// 全是空白(含空串)则为 true。
+    37	bool isBlank(const std::string& s);
+    38	// 按 '\n' 拆行,并吃掉行尾的 '\r'(兼容 CRLF 文件)。末尾换行不产生空尾行。
+    39	std::vector<std::string> splitLines(const std::string& text);
+    40	std::vector<std::string> split(const std::string& s, char sep);
+    41	std::string join(const std::vector<std::string>& parts, const std::string& sep);
+    42	std::string replaceAll(std::string s, const std::string& from, const std::string& to);
+    43	// 截到最多 max_bytes 字节,且不切断 UTF-8 字符;被截断时追加 "…"。
+    44	std::string clipBytes(const std::string& s, size_t max_bytes);
+    45	// 大小写不敏感查找,找不到返回 std::string::npos。
+    46	size_t findNoCase(const std::string& hay, const std::string& needle, size_t from = 0);
+    47	// FNV-1a 64 位;用于 Builder::tempBinaryPath 之类的稳定短哈希。
+    48	uint64_t hash64(const std::string& s);
+    49	std::string toHex(uint64_t v);
+    50	
+    51	// ---------------------------------------------------------------- 路径
+    52	std::string basename(const std::string& path);
+    53	std::string dirname(const std::string& path);          // 无目录部分时返回 "."
+    54	std::string extension(const std::string& path);        // 含点,如 ".cpp";无扩展名返回 ""
+    55	std::string stem(const std::string& path);             // basename 去掉扩展名
+    56	std::string joinPath(const std::string& a, const std::string& b);
+    57	std::string expandUser(const std::string& path);       // 展开开头的 "~/"
+    58	std::string tempDir();                                 // $TMPDIR,否则 "/tmp"(结尾不带斜杠)
+    59	std::string homeDir();                                 // $HOME,取不到则用 getpwuid
+    60	
+    61	// ---------------------------------------------------------------- 环境 / 文件
+    62	std::string envOr(const char* name, const std::string& def);
+    63	bool   fileExists(const std::string& path);
+    64	bool   isDirectory(const std::string& path);
+    65	int64_t fileMtimeMs(const std::string& path);          // 不存在返回 -1
+    66	int64_t fileSize(const std::string& path);             // 不存在返回 -1
+    67	// 读整个文件。失败时 err 为中文说明并返回 false。
+    68	bool readFile(const std::string& path, std::string& out, std::string& err);
+    69	// 原子写:先写同目录的 "<name>.cppide.tmp",fsync 后 rename。失败 err 为中文说明。
+    70	bool writeFileAtomic(const std::string& path, const std::string& data, std::string& err);
+    71	// 递归建目录(mkdir -p 语义)。
+    72	bool makeDirs(const std::string& path, std::string& err);
+    73	
+    74	// ---------------------------------------------------------------- UTF-8
+    75	// 解析 s[i] 开始的一个 UTF-8 字符:cp 为码点,返回消耗的字节数(>=1)。
+    76	// 非法字节序列按 1 字节处理,cp 置为 0xFFFD —— 绝不返回 0,保证调用方循环必然前进。
+    77	size_t utf8Decode(const std::string& s, size_t i, uint32_t& cp);
+    78	size_t utf8Next(const std::string& s, size_t i);       // 下一个字符起点(不超过 size())
+    79	size_t utf8Prev(const std::string& s, size_t i);       // 上一个字符起点(不小于 0)
+    80	bool   utf8IsContinuation(unsigned char c);            // (c & 0xC0) == 0x80
+    81	std::string codepointToUtf8(uint32_t cp);
+    82	std::vector<uint32_t> utf8ToCodepoints(const std::string& s);
+    83	size_t utf8Length(const std::string& s);               // 字符数(非字节数)
+    84	bool   utf8Valid(const std::string& s);
+    85	
+    86	// 宽字符互转(ncurses 的 waddnwstr / wget_wch 需要 wchar_t)。
+    87	std::wstring toWide(const std::string& utf8);
+    88	std::string  fromWide(const std::wstring& w);
+    89	
+    90	// ---------------------------------------------------------------- 显示宽度
+    91	// 单个码点的显示宽度:wcwidth 包装。控制字符返回 1(我们用 '?' 之类占位绘制),
+    92	// wcwidth 返回 -1 的也当 1,永不返回负数 —— 布局计算里出现负宽度是灾难。
+    93	int charDisplayWidth(uint32_t cp);
+    94	// 整串显示宽度;start_col 是本串起始的显示列(影响 Tab 的制表位对齐)。
+    95	int displayWidth(const std::string& s, int tab_width, int start_col = 0);
+    96	// 字节列 -> 显示列(byte_col 会被 clamp 到 [0, s.size()])。
+    97	int byteToDisplayCol(const std::string& s, int byte_col, int tab_width);
+    98	// 显示列 -> 字节列;落在宽字符/Tab 中间时取该字符的起始字节。
+    99	int displayColToByte(const std::string& s, int display_col, int tab_width);
+   100	// 把 s 折行成每行显示宽度不超过 width 的若干段,返回各段的 [起始字节, 字节长度]。
+   101	// 优先在空白处断,单词过长则硬断;绝不切断 UTF-8 字符。面板中文输出靠它。
+   102	struct WrapSeg { int start; int len; };
+   103	std::vector<WrapSeg> wrapDisplay(const std::string& s, int width, int tab_width);
+   104	
+   105	}  // namespace util

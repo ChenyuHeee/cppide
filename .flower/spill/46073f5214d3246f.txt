@@ -1,0 +1,130 @@
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// 构造 / 析构
+// ---------------------------------------------------------------------------
+
+AiService::AiService(const Config& cfg, Mailbox<AppEvent>* out)
+    : cfg_(cfg), out_(out) {
+  last_activity_ms_.store(util::nowMs());
+  last_auto_request_ms_.store(0);
+  mode_.store(static_cast<int>(AiMode::Practice));  // 默认练习模式(更安全的那一档)
+  if (cfg_.aiEnabled()) {
+    state_.store(static_cast<int>(AiState::Idle));
+    // ★ 只有 key 非空才创建线程。key 为空时线程根本不存在。
+    th_ = std::thread(&AiService::workerLoop, this);
+  } else {
+    state_.store(static_cast<int>(AiState::Disabled));
+  }
+}
+
+AiService::~AiService() {
+  // 顺序要紧:先让在飞请求的取消回调立刻返回 true(gen 变化 + stop_),
+  // 再 close 唤醒 waitPop,最后 join。绝不 detach。
+  stop_.store(true);
+  gen_.fetch_add(1);
+  in_.close();
+  if (th_.joinable()) th_.join();
+  in_.drain();
+  in_flight_.store(false);
+}
+
+// ---------------------------------------------------------------------------
+// UI 线程侧:全部必须立即返回(只碰原子量 / 一次 push)
+// ---------------------------------------------------------------------------
+
+bool AiService::enabled() const { return cfg_.aiEnabled(); }
+
+AiMode AiService::mode() const { return static_cast<AiMode>(mode_.load()); }
+
+void AiService::setMode(AiMode m) {
+  // §6(3):先作废在飞工作,再换模式。于是"切到练习模式后写代码模式的回复才落地"
+  // 这个时间窗在结构上不存在。
+  gen_.fetch_add(1);
+  mode_.store(static_cast<int>(m));
+  const int64_t now = util::nowMs();
+  last_activity_ms_.store(now);
+  if (enabled()) state_.store(static_cast<int>(AiState::Idle));
+}
+
+AiMode AiService::toggleMode() {
+  const AiMode next = (mode() == AiMode::Code) ? AiMode::Practice : AiMode::Code;
+  setMode(next);
+  return next;
+}
+
+void AiService::noteActivity() {
+  last_activity_ms_.store(util::nowMs());
+  gen_.fetch_add(1);  // 在飞请求就此作废(双重过滤的第一层)
+}
+
+void AiService::cancelInFlight() {
+  gen_.fetch_add(1);
+  if (enabled()) state_.store(static_cast<int>(AiState::Idle));
+}
+
+uint64_t AiService::generation() const { return gen_.load(); }
+
+bool AiService::inFlight() const { return in_flight_.load(); }
+
+AiState AiService::state() const {
+  if (!enabled()) return AiState::Disabled;
+  if (in_flight_.load()) return AiState::Thinking;
+  const AiState s = static_cast<AiState>(state_.load());
+  return (s == AiState::Error) ? AiState::Error : AiState::Idle;
+}
+
+const char* AiService::stateZh() const {
+  switch (state()) {
+    case AiState::Disabled: return "未配置";
+    case AiState::Thinking: return "思考中…";
+    case AiState::Error:    return "错误";
+    case AiState::Idle:     break;
+  }
+  return "就绪";
+}
+
+void AiService::maybeAutoTrigger(const TextBuffer& b, Pos cur) {
+  // §5.3:条件全部满足才发。任何一条不满足都是"立刻返回",绝不阻塞输入。
+  if (!enabled()) return;
+  if (mode() != AiMode::Code) return;       // 练习模式没有自动补全
+  if (in_flight_.load()) return;
+  if (stop_.load()) return;
+  const int64_t now = util::nowMs();
+  if (now - last_activity_ms_.load() < cfg_.ghost_delay_ms) return;
+  if (now - last_auto_request_ms_.load() < cfg_.ghost_min_interval_ms) return;
+  if (!b.hasNonBlank()) return;
+  last_auto_request_ms_.store(now);
+  submit(buildRequest(b, cur, std::string(), AiMode::Code));
+}
+
+void AiService::askNow(const TextBuffer& b, Pos cur, const std::string& question) {
+  if (!enabled()) {
+    // 未配置也必须给出可见提示,且绝不崩(需求:key 为空时仅提示未配置)。
+    if (out_ != nullptr) {
+      AppEvent ev;
+      ev.kind = EvKind::AiError;
+      ev.gen = gen_.load();
+      ev.sink = sinkFor(mode());
+      ev.text = kZhNotConfigured;
+      out_->push(std::move(ev));
+    }
+    return;
+  }
+  // 手动请求无视 ghost_min_interval_ms,但同样先取消在飞请求(§5.3)。
+  gen_.fetch_add(1);
+  const int64_t now = util::nowMs();
+  last_activity_ms_.store(now);
+  last_auto_request_ms_.store(now);
+  submit(buildRequest(b, cur, question, mode()));
+}
+
+void AiService::submit(AiRequest req) {
+  if (!enabled() || stop_.load()) return;
+  // in_flight_ 在 UI 线程置位:否则"提交后 worker 还没跑起来"的窗口里
+  // maybeAutoTrigger 会重复触发同一个请求。worker 收尾时负责清零。
+  in_flight_.store(true);
+  state_.store(static_cast<int>(AiState::Idle));
+  in_.push(std::move(req));

@@ -1,0 +1,121 @@
+/work:
+total 428
+drwxr-xr-x  8 root root    256 Sep  6 18:12 .
+drwxr-xr-x  1 root root   4096 Sep  6 16:07 ..
+drwxr-xr-x  8 root root    256 Sep  6 17:05 .flower
+-rw-r--r--  1 root root   3081 Sep  6 17:31 Makefile
+-rw-------  1 root root 430080 Sep  6 18:09 core
+drwxr-xr-x  4 root root    128 Sep  6 18:15 runs
+drwxr-xr-x 50 root root   1600 Sep  6 18:09 src
+drwxr-xr-x 14 root root    448 Sep  6 18:08 tests
+
+/work/.flower:
+total 4
+drwxr-xr-x  8 root root  256 Sep  6 17:05 .
+drwxr-xr-x  8 root root  256 Sep  6 18:12 ..
+-rw-r--r--  1 root root 4028 Sep  6 18:12 INDEX.md
+drwxr-xr-x 16 root root  512 Sep  6 18:12 artifacts
+drwxr-xr-x  6 root root  192 Sep  6 17:53 notes
+drwxr-xr-x  2 root root   64 Sep  6 17:13 scratch
+drwxr-xr-x 16 root root  512 Sep  6 18:10 scripts
+drwxr-xr-x 40 root root 1280 Sep  6 18:15 spill
+
+/work/.flower/artifacts:
+total 184
+drwxr-xr-x 16 root root   512 Sep  6 18:12 .
+drwxr-xr-x  8 root root   256 Sep  6 17:05 ..
+-rw-r--r--  1 root root 43601 Sep  6 16:37 architecture.md
+-rw-r--r--  1 root root 17008 Sep  6 16:18 env-probe.md
+-rw-r--r--  1 root root  5231 Sep  6 18:12 panel-header-fix.md
+-rw-r--r--  1 root root 12218 Sep  6 16:56 wave1-report.md
+-rw-r--r--  1 root root  6678 Sep  6 17:14 wave2-config.md
+-rw-r--r--  1 root root  8477 Sep  6 17:14 wave2-highlight.md
+-rw-r--r--  1 root root  6168 Sep  6 17:12 wave2-json.md
+-rw-r--r--  1 root root  8072 Sep  6 17:26 wave2-proc.md
+-rw-r--r--  1 root root  6632 Sep  6 17:15 wave2-textbuf.md
+-rw-r--r--  1 root root  7469 Sep  6 17:11 wave2-util.md
+-rw-r--r--  1 root root  7605 Sep  6 17:50 wave3-aihttp.md
+-rw-r--r--  1 root root 12612 Sep  6 17:57 wave3-build-keys.md
+-rw-r--r--  1 root root  9030 Sep  6 17:46 wave3-editor.md
+-rw-r--r--  1 root root 11213 Sep  6 18:02 wave3-panel.md
+
+/work/.flower/notes:
+total 28
+drwxr-xr-x 6 root root  192 Sep  6 17:53 .
+drwxr-xr-x 8 root root  256 Sep  6 17:05 ..
+-rw-r--r-- 1 root root 2510 Sep  6 16:38 技术决策.md
+-rw-r--r-- 1 root root 9197 Sep  6 17:53 跨模块约定.md
+-rw-r--r-- 1 root root 2057 Sep  6 16:11 问答记录.md
+-rw-r--r-- 1 root root 4299 Sep  6 16:11 需求.md
+
+/work/.flower/scripts:
+total 76
+drwxr-xr-x 16 root root   512 Sep  6 18:10 .
+drwxr-xr-x  8 root root   256 Sep  6 17:05 ..
+-rwxr-xr-x  1 root root  5346 Sep  6 17:45 gen-diag-samples.py
+-rwxr-xr-x  1 root root 10329 Sep  6 16:18 probe-toolchain.sh
+-rw-r--r--  1 root root  1025 Sep  6 18:10 scan-header-storage.py
+-rwxr-xr-x  1 root root   890 Sep  6 17:10 verify-util.sh
+-rw-r--r--  1 root root  9594 Sep  6 16:53 wave1-verify.sh
+-rwxr-xr-x  1 root root  1613 Sep  6 17:13 wave2-config-verify.sh
+-rwxr-xr-x  1 root root  1623 Sep  6 17:12 wave2-highlight-verify.sh
+-rwxr-xr-x  1 root root  1276 Sep  6 17:11 wave2-json-verify.sh
+-rwxr-xr-x  1 root root  1898 Sep  6 17:16 wave2-proc-verify.sh
+-rw-r--r--  1 root root  2111 Sep  6 17:11 wave2-textbuf-verify.sh
+-rwxr-xr-x  1 root root  1996 Sep  6 17:41 wave3-aihttp-verify.sh
+-rwxr-xr-x  1 root root  2389 Sep  6 17:53 wave3-build-keys-verify.sh
+-rwxr-xr-x  1 root root  2026 Sep  6 17:42 wave3-editor-verify.sh
+-rwxr-xr-x  1 root root  3708 Sep  6 17:54 wave3-panel-verify.sh
+
+/work/src:
+total 1008
+drwxr-xr-x 50 root root  1600 Sep  6 18:09 .
+drwxr-xr-x  8 root root   256 Sep  6 18:12 ..
+-rw-r--r--  1 root root  6173 Sep  6 16:48 ai.h
+-rw-r--r--  1 root root 27798 Sep  6 17:45 aihttp.cpp
+-rw-r--r--  1 root root   102 Sep  6 17:51 aihttp.d
+-rw-r--r--  1 root root  5412 Sep  6 16:47 aihttp.h
+-rw-r--r--  1 root root 58536 Sep  6 17:51 aihttp.o
+-rw-r--r--  1 root root  6014 Sep  6 16:51 app.h
+-rw-r--r--  1 root root 14506 Sep  6 17:41 build.cpp
+-rw-r--r--  1 root root   186 Sep  6 17:51 build.d
+-rw-r--r--  1 root root  3519 Sep  6 16:46 build.h
+-rw-r--r--  1 root root 41272 Sep  6 17:51 build.o
+-rw-r--r--  1 root root 16975 Sep  6 17:04 config.cpp
+-rw-r--r--  1 root root   102 Sep  6 17:31 config.d
+-rw-r--r--  1 root root  3471 Sep  6 16:44 config.h
+-rw-r--r--  1 root root 94488 Sep  6 17:31 config.o
+-rw-r--r--  1 root root 25745 Sep  6 17:43 editor.cpp
+-rw-r--r--  1 root root   219 Sep  6 17:51 editor.d
+-rw-r--r--  1 root root  5405 Sep  6 16:48 editor.h
+-rw-r--r--  1 root root 39176 Sep  6 17:51 editor.o
+-rw-r--r--  1 root root 18647 Sep  6 17:11 highlight.cpp
+-rw-r--r--  1 root root    97 Sep  6 17:31 highlight.d
+-rw-r--r--  1 root root  3100 Sep  6 16:45 highlight.h
+-rw-r--r--  1 root root 44384 Sep  6 17:31 highlight.o
+-rw-r--r--  1 root root 22002 Sep  6 17:02 json.cpp
+-rw-r--r--  1 root root    48 Sep  6 17:31 json.d
+-rw-r--r--  1 root root  3681 Sep  6 16:43 json.h
+-rw-r--r--  1 root root 54600 Sep  6 17:31 json.o
+-rw-r--r--  1 root root 20349 Sep  6 17:44 keys.cpp
+-rw-r--r--  1 root root    71 Sep  6 17:51 keys.d
+-rw-r--r--  1 root root  3533 Sep  6 16:50 keys.h
+-rw-r--r--  1 root root 31024 Sep  6 17:51 keys.o
+-rw-r--r--  1 root root  3359 Sep  6 16:43 mailbox.h
+-rw-r--r--  1 root root 22017 Sep  6 18:07 panel.cpp
+-rw-r--r--  1 root root   104 Sep  6 18:09 panel.d
+-rw-r--r--  1 root root  4677 Sep  6 18:06 panel.h
+-rw-r--r--  1 root root 38872 Sep  6 18:09 panel.o
+-rw-r--r--  1 root root 27285 Sep  6 17:22 proc.cpp
+-rw-r--r--  1 root root   155 Sep  6 17:31 proc.d
+-rw-r--r--  1 root root  5729 Sep  6 16:46 proc.h
+-rw-r--r--  1 root root 81096 Sep  6 17:31 proc.o
+-rw-r--r--  1 root root 23029 Sep  6 17:12 textbuf.cpp
+-rw-r--r--  1 root root    60 Sep  6 17:31 textbuf.d
+-rw-r--r--  1 root root  5663 Sep  6 16:45 textbuf.h
+-rw-r--r--  1 root root 62504 Sep  6 17:31 textbuf.o
+-rw-r--r--  1 root root  4764 Sep  6 16:50 ui.h
+-rw-r--r--  1 root root 29723 Sep  6 17:04 util.cpp
+-rw-r--r--  1 root root    48 Sep  6 17:31 util.d
+-rw-r--r--  1 root root  6236 Sep  6 16:42 util.h
+-rw-r--r--  1 root root 49032 Sep  6 17:31 util.o

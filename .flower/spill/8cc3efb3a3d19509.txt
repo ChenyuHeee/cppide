@@ -1,0 +1,180 @@
+```
+另外从屏幕 dump 里确认,状态栏同时有三处体现模式:
+最左的模式徽章、右侧 `… │ AI 就绪` 区、以及切换时的中文状态消息。
+
+**结论:通过**
+
+---
+
+### 验收 6 — 写代码模式:停顿后自动请求,灰色 ghost text,Tab 接受、Esc 丢弃
+
+> 这是本次审计投入最大的一项。**用自写的本地假 SSE 端点走完了全链路**,不是代码评审。
+
+**我怎么验的**
+1. 代码审计自动触发条件与可配置性。
+2. 起 `audit-fake-ai-server.py` 假冒 OpenAI 兼容 SSE 端点,`base_url` 指向 `127.0.0.1`,
+   `api_key` 填假值,端点吐出可识别的补全 `GHOSTMARK_Alpha();\n    GHOSTMARK_Beta();`。
+3. pty 里真走:切模式 → 敲一个字符 → 停顿 → 自动请求 → ghost 上屏 → Tab 接受 → 存盘 → 读磁盘。
+4. 另一条:同样流程但按 Esc → 断言磁盘无 AI 文本、且 `Ctrl-L` 重绘后 ghost 不再出现在屏幕上。
+
+**证据**(`audit-ai-modes.sh`,16/16 通过)
+
+(a) 触发条件与停顿时长可配置(`src/ai.cpp:203-215`):
+```cpp
+if (!enabled()) return;
+if (mode() != AiMode::Code) return;        // 练习模式没有自动补全
+if (in_flight_.load()) return;
+if (now - last_activity_ms_ < cfg_.ghost_delay_ms) return;
+if (now - last_auto_request_ms_ < cfg_.ghost_min_interval_ms) return;
+if (!b.hasNonBlank()) return;
+```
+`src/config.h:31` → `int ghost_delay_ms = 500;` —— **默认就是 ~500ms**,且 `config.cpp` 有解析,可配置。
+```
+PASS  src/config.h 里 ghost_delay_ms 默认值 = 500
+PASS  ghost_delay_ms 可由配置文件覆盖
+```
+
+(b) 停顿后**自动**请求(全程没按任何 AI 快捷键):
+```
+PASS  停顿后自动向端点发起了请求(新增 1 条,全程未按 Ctrl-A)
+PASS  返回内容以 ghost 形式显示在屏幕上
+```
+假服务器的请求日志证实:`Authorization: Bearer FAKEKEY_AUDIT`、`"model":"audit-model-xyz"`。
+
+(c) 是**灰色**的:从原始 ANSI 流里分段比对 ——
+```
+ghost SGR = ['90']   正文 SGR = ['0', '33', '35']
+PASS  ghost 的终端属性与正文不同(独立配色/暗色)
+```
+`SGR 90` = bright black = 灰。与 `src/ui.cpp:430` 的 `if (d.pair == P_Ghost && colors >= 256) fg = 8;` 一致。
+
+(d) Tab 接受 —— **磁盘证据**:
+```
+PASS  Tab 接受 -> AI 文本进缓冲区并存盘
+```
+存盘后文件首行确为 ` zGHOSTMARK_Alpha();` + 次行 `    GHOSTMARK_Beta();`。
+
+(e) Esc 丢弃 —— 磁盘 + 屏幕双证据:
+```
+PASS  Esc 丢弃 -> 缓冲区无 AI 文本
+PASS  Esc 之后 ghost 从屏幕上消失(mark 之后强制重绘,GHOSTMARK 不再出现)
+```
+
+(f) 停顿时长真的在起作用:`ghost_delay_ms=30000` 时整段脚本内 0 请求。
+```
+PASS  ghost_delay_ms=30000 时全程没有发出请求(延时可配置且真的生效)
+```
+补充单独探针:`ghost_delay_ms=5000`,切到写代码模式后只等 1.5s 不打字 → 服务端收到 **0** 次请求,
+证明 `setMode()` 会重置 `last_activity_ms_`(`src/ai.cpp:156-164`),不存在"切模式即刻开炮"。
+
+**结论:通过**(端到端,不是纸面推演)
+
+---
+
+### 验收 7 — 练习模式:同一 AI 入口不插码;只在独立面板输出中文思路;Tab 不接受 AI 内容
+
+> 同样用本地假端点走完全程,而且**故意让端点违规**:回复里塞一整段带 ``` 围栏的完整代码。
+
+**我怎么验的**
+1. 假端点 `/practice` 返回:中文思路 + ```cpp 完整函数 PRACTICE_LEAK_CODE ``` + 中文下一步 + 思维链。
+2. 练习模式下 `Ctrl-A` → 面板打开提问输入行 → 输入问题 → 回车 → 等回复。
+3. 断言:缓冲区 **sha256 逐字节未变**;回复只出现在面板;连按 3 次 Tab 后只有缩进。
+4. 边界加测:**写代码模式先拿到一个活的 ghost,再 `Ctrl-T` 切到练习模式,然后按 Tab**。
+5. 代码路径审计:确认这是结构性保证而不是散落的 if。
+
+**证据**(`audit-ai-modes.sh`)
+```
+PASS  缓冲区逐字节未变(sha256 相同)
+      before = 8969a45a948095d3fca8b5cf8daf3f721651955e9f56611139914e682db6139f
+      after  = 8969a45a948095d3fca8b5cf8daf3f721651955e9f56611139914e682db6139f
+PASS  含代码的回复只出现在【AI】面板里(屏幕上能看到 PRACTICE_LEAK_CODE)
+PASS  面板输出的是中文思路提示(推理过程 / 复杂度 / 下一步 都在)
+PASS  Tab 未引入任何 AI 内容
+PASS  Tab 只产生缩进(首行被缩进 12 个空格 = 3 次 Tab × tab_width 4)
+PASS  带 ghost 切到练习模式后 ghost 作废,Tab 不接受任何 AI 内容
+PASS  练习模式 system prompt 含"不要给代码/只给思路"类约束
+      尾部原文:"… 4) 下一步该想什么。不超过 300 字。再次强调:不要输出任何可直接编译运行的代码。"
+```
+
+**是不是结构性保证?是。** 我按"AI 文本能不能到达 `TextBuffer::insert`"这条线独立追了一遍:
+
+1. **唯一决策点**:`AiService::sinkFor(mode)`(`src/ai.h:115-117`)在**请求创建时**把
+   `AiSink` 定死(`Practice → PanelOnly`),写进 `AiRequest`,再随每个 `AppEvent` 一路带回。
+   全仓 `sinkFor` 只有这一处定义、`ai.cpp:301` 一处调用。
+2. **唯一落地点**:`App::onAiDone` 里**一个** `switch (ev.sink)`(`src/app.cpp:583`)。
+   `GhostText` 分支才碰 `ed_.setGhost()`;`PanelOnly` 分支只往面板 append。
+   `onAiDelta`(`app.cpp:559`)刻意**不落地**,只累加到 `ai_stream_`。
+3. **唯一咽喉点**:`Editor::acceptGhost()`(`src/editor.cpp:679-696`)是 AI 文本到达
+   `TextBuffer::insert` 的唯一路径,开头四行 early-return:
+   ```cpp
+   if (!ghost_.complete)                 return false;
+   if (ghost_.text.empty())              return false;
+   if (ghost_.sink != AiSink::GhostText) return false;   // ★ 结构性拦截
+   if (ghost_.gen != expected_gen_)      return false;
+   ```
+   `setGhost()`(第 650 行)除 assert 外还有一条**运行期** early-return —— NDEBUG 下
+   assert 被裁掉后仍然拦得住,退化方向永远是"没有 ghost",不可能是"代码被插入"。
+4. **`doTab()`(`app.cpp:892-903`)里一行模式判断都没有** —— 它不需要,因为练习模式
+   永远拿不到 ghost。这正是"结构性"的含义:不靠记得处处判模式。
+
+我特意找过有没有第二条插入路径:`ai.cpp` / `aihttp.cpp` / `ui.cpp` 都不持有可写 `TextBuffer&`;
+`grep setGhost` 全仓只有 `app.cpp:596` 一个调用点。**没有旁路。**
+
+**结论:通过**
+
+---
+
+### 验收 8 — key 与模型 ID 从配置读;无硬编码;配置缺失时编辑/编译照常;不泄漏 key
+
+**我怎么验的**
+静态扫描 + 配置缺失实跑 + 灌一个独特假 key 后全面 grep。
+
+**证据**(`audit-config-key.sh`,14/14 通过)
+```
+PASS  源码里没有 sk-* / Bearer <literal> 形态的 key 字面量
+PASS  二进制里没有 sk-* 字符串
+PASS  配置缺失:编译 + 运行照常(看到程序 stdout NOCFG_RUN_OK)
+PASS  配置缺失:编辑 + 保存照常(磁盘有改动)
+PASS  配置缺失:退出码 7 仍然可见
+PASS  配置缺失时未崩溃
+PASS  配置缺失:界面上给出「AI 未配置」类提示
+PASS  --doctor 输出里没有 key 的值
+PASS  --print-config 输出里没有 key 的值
+PASS  环境变量注入的 key 未经 --doctor 泄漏
+PASS  AI 错误路径(401)屏幕与面板里都没有 key 的值
+PASS  401 时给出中文提示「API key 无效或已过期」
+PASS  服务端收到的 Authorization 正是配置里的 key(证明 key 来自配置)
+PASS  请求体里的 model 正是配置里的 audit-model-xyz(证明模型名来自配置)
+```
+用的独特假 key 是 `UNIQUEKEY_qX7vN2mZ8tR4wL9pJ3hB6sD1`,在 `--doctor` / `--print-config` /
+屏幕 dump / 原始 ANSI 流 四处 `grep -F` 均无命中。
+`--doctor` 只打印 `api_key : 已配置(已隐去)`。
+
+**一处需要协调者裁决的措辞问题**:需求原文是"代码里不出现任何硬编码 key 或**写死的模型名**"。
+`src/config.h:29` 有 `std::string model = "deepseek-chat";` —— 这是一个**默认占位值**。
+减轻因素:(a) 它可被配置/环境变量覆盖,实际请求用的一律是 `Config::model`
+(假端点收到的是我配的 `audit-model-xyz`,证明确实走配置);
+(b) 用户没改时 `config.cpp:336-337` 会主动 warn "model 当前是占位默认值…请按官方文档填写";
+(c) README 与 `config.sample.json` 都写明要自己填。
+严格按字面读是"代码里出现了一个写死的模型名";按意图读(模型 ID 从配置读取)是满足的。
+**我的判定:实质通过,措辞上留一个待裁决项**,见 §3 问题 3。
+
+**结论:通过**(model 占位值一项建议协调者明确裁决)
+
+---
+
+### 验收 9 — 网络失败/超时/API 报错时不崩、不卡死输入、有可见错误提示
+
+**我怎么验的**
+六种异常各走一次,每种都断言"有可见中文提示"+"没崩";
+另外两轮专门验"**请求在飞期间键盘仍然生效**"(文件系统断言:在飞时敲的字符必须能存进磁盘)。
+
+**证据**(`audit-net-failures.sh`,16/16 通过)
+
+| # | 场景 | 构造方式 | 屏幕上的中文提示 | 结果 |
+|---|---|---|---|---|
+| 1 | 不可路由地址 | `http://203.0.113.1:9`(RFC5737 保留段) | 「超时」 | PASS,未崩 |
+| 2 | 立即断连 | 本地端点收到请求即 `shutdown`+`close` | 「没有返回任何数据」 | PASS,未崩 |
+| 3 | HTTP 500 | 本地端点回 500 + OpenAI 风格错误体 | 「服务端错误」 | PASS,未崩 |
+| 4 | 畸形 JSON | SSE 帧里塞截断/非法 JSON | 有中文 AI 错误提示 | PASS,未崩 |
+| 4b | 完全非 JSON | 200 + `<html>` 正文 | 有中文 AI 错误提示 | PASS,未崩 |

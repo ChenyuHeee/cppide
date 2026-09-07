@@ -1,0 +1,62 @@
+total 648
+drwxr-xr-x 10 root root    320 Sep  6 22:59 .
+drwxr-xr-x  1 root root   4096 Sep  6 16:07 ..
+drwxr-xr-x  8 root root    256 Sep  6 17:05 .flower
+-rw-r--r--  1 root root   3081 Sep  6 17:31 Makefile
+-rw-r--r--  1 root root  42698 Sep  6 22:59 README.md
+-rw-r--r--  1 root root   2252 Sep  6 19:48 config.sample.json
+-rwxr-xr-x  1 root root 605536 Sep  6 22:45 cppide
+drwxr-xr-x  4 root root    128 Sep  6 23:29 runs
+drwxr-xr-x 62 root root   1984 Sep  6 22:45 src
+drwxr-xr-x 18 root root    576 Sep  6 22:57 tests
+---FLOWER---
+/work/.flower/INDEX.md
+/work/.flower/artifacts/wave3-aihttp.md
+/work/.flower/artifacts/architecture.md
+/work/.flower/artifacts/wave4-ui.md
+/work/.flower/artifacts/wave4-ai.md
+/work/.flower/artifacts/wave3-editor.md
+/work/.flower/artifacts/wave5-polish.md
+/work/.flower/artifacts/wave2-highlight.md
+/work/.flower/artifacts/wave2-textbuf.md
+/work/.flower/artifacts/wave2-json.md
+/work/.flower/artifacts/env-probe.md
+/work/.flower/artifacts/wave1-report.md
+/work/.flower/artifacts/wave2-config.md
+/work/.flower/artifacts/wave3-build-keys.md
+/work/.flower/artifacts/wave2-proc.md
+/work/.flower/artifacts/wave2-util.md
+/work/.flower/artifacts/panel-header-fix.md
+/work/.flower/artifacts/wave3-panel.md
+/work/.flower/artifacts/wave5-finalfix.md
+/work/.flower/artifacts/wave4-app.md
+/work/.flower/artifacts/wave5-readme.md
+/work/.flower/notes/需求.md
+/work/.flower/notes/技术决策.md
+/work/.flower/notes/跨模块约定.md
+/work/.flower/notes/问答记录.md
+/work/.flower/scripts/wave4-pty-loop.txt
+/work/.flower/scripts/wave5-finalfix-help-page.txt
+/work/.flower/scripts/wave3-panel-verify.sh
+/work/.flower/scripts/wave5-b4-ai-states.sh
+/work/.flower/scripts/wave2-highlight-verify.sh
+/work/.flower/scripts/wave4-pty-edit.txt
+/work/.flower/scripts/probe-toolchain.sh
+/work/.flower/scripts/wave5-b3c-real100mb.txt
+/work/.flower/scripts/wave5-readme-verify.sh
+/work/.flower/scripts/wave5-verify.sh
+/work/.flower/scripts/wave5-a3-compile-esc.txt
+/work/.flower/scripts/wave5-b2-esc-kill.txt
+/work/.flower/scripts/wave5-keyprobe-cursor.txt
+/work/.flower/scripts/verify-util.sh
+/work/.flower/scripts/wave5-b5-bigfile.txt
+/work/.flower/scripts/wave5-c-find-help.txt
+/work/.flower/scripts/wave3-aihttp-verify.sh
+/work/.flower/scripts/wave4-pty-drive.cpp
+/work/.flower/scripts/wave5-exit-loop.cpp
+/work/.flower/scripts/wave2-config-verify.sh
+/work/.flower/scripts/wave2-json-verify.sh
+/work/.flower/scripts/wave1-verify.sh
+/work/.flower/scripts/wave5-b4-ai-common.txt
+/work/.flower/scripts/wave4-ai-verify.sh
+/work/.flower/scripts/wave5-a2-newfile.txt

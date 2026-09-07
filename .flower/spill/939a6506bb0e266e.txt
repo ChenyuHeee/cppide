@@ -1,0 +1,84 @@
+1	# cppide —— C/C++ 终端 IDE(ncurses + libcurl,C++17)
+2	#
+3	# 依赖:ncurses(宽字符版)+ libcurl。
+4	#   macOS  : 系统自带(brew 的 ncurses 若存在则优先)
+5	#   Debian : apt-get install build-essential libncursesw5-dev libcurl4-openssl-dev
+6	#            (trixie 上包名为 libncurses-dev + libcurl4-gnutls-dev 亦可)
+7	#
+8	# 常用目标:
+9	#   make                 编译出 ./cppide
+10	#   make check-headers   Wave 1 验收门:每个头文件必须自给自足
+11	#   make tests           编译并运行 tests/test_*.cpp
+12	#   make debug           -O0 -g + ASan/UBSan 全量重建
+13	
+14	BIN      ?= cppide
+15	CXX      ?= c++
+16	CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -MMD -MP
+17	PREFIX   ?= /usr/local
+18	UNAME_S  := $(shell uname -s)
+19	
+20	# tests/*.cpp 直接写 #include "config.h"(不带 ../src/),所以搜索路径必须带 -Isrc。
+21	# 放在 CPPFLAGS 而不是 CXXFLAGS:check-headers 的 SYNFLAGS 会过滤 CXXFLAGS,
+22	# 而 CPPFLAGS 三个目标(%.o / check-headers / tests)都会用到。
+23	CPPFLAGS += -Isrc
+24	
+25	ifeq ($(UNAME_S),Darwin)
+26	  NCURSES_PREFIX := $(shell brew --prefix ncurses 2>/dev/null)
+27	  ifneq ($(NCURSES_PREFIX),)
+28	    CPPFLAGS += -I$(NCURSES_PREFIX)/include
+29	    LDFLAGS  += -L$(NCURSES_PREFIX)/lib
+30	  endif
+31	  LDLIBS += -lncurses -lcurl -lpthread
+32	  # 若 macOS 自带的 ncurses 头不肯给出宽字符原型(get_wch / add_wch / cchar_t 未声明),
+33	  # 打开下面这行;Debian 的 ncursesw 头默认已 NCURSES_WIDECHAR=1,不需要它。
+34	  # CPPFLAGS += -D_XOPEN_SOURCE_EXTENDED
+35	else
+36	  # Linux:宽字符符号(add_wch/get_wch)只在 ncursesw 里,必须链 -lncursesw
+37	  LDLIBS += -lncursesw -lcurl -lpthread
+38	endif
+39	
+40	SRC := $(wildcard src/*.cpp)
+41	OBJ := $(SRC:.cpp=.o)
+42	DEP := $(OBJ:.o=.d)
+43	HDR := $(wildcard src/*.h)
+44	
+45	# 语法检查时不要生成 .d(会与 .o 的依赖文件同名互相覆盖)
+46	SYNFLAGS := $(filter-out -MMD -MP,$(CXXFLAGS))
+47	
+48	all: $(BIN)
+49	
+50	$(BIN): $(OBJ)
+51		$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+52	
+53	%.o: %.cpp
+54		$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+55	
+56	# Wave 1 的验收门:每个头文件必须自给自足。
+57	# 用“生成一个只 include 该头的 TU”而不是直接 -x c++ 头文件本身:
+58	# 后者会让 GCC 无条件报 "#pragma once in main file"(该警告无法用 -Wno-* 关掉),
+59	# 而且“被 include”才是头文件真实的使用方式。
+60	check-headers:
+61		@for h in $(HDR); do echo "  $$h"; \
+62		  printf '#include "%s"\n' "$$h" | \
+63		  $(CXX) $(CPPFLAGS) $(SYNFLAGS) -fsyntax-only -x c++ - || exit 1; done
+64		@echo "check-headers: OK ($(words $(HDR)) 个头文件)"
+65	
+66	debug: CXXFLAGS += -O0 -g -fsanitize=address,undefined
+67	debug: LDFLAGS  += -fsanitize=address,undefined
+68	debug: clean all
+69	
+70	tests: $(filter-out src/main.o,$(OBJ))
+71		@for t in tests/test_*.cpp; do \
+72		  $(CXX) $(CPPFLAGS) $(CXXFLAGS) -o /tmp/$$(basename $$t .cpp) $$t \
+73		    $(filter-out src/main.o,$(OBJ)) $(LDLIBS) && /tmp/$$(basename $$t .cpp) || exit 1; done
+74	
+75	install: $(BIN)
+76		install -d $(DESTDIR)$(PREFIX)/bin
+77		install -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+78	
+79	clean:
+80		rm -f $(OBJ) $(DEP) $(BIN)
+81	
+82	-include $(DEP)
+83	.PHONY: all clean debug tests install check-headers
+84	

@@ -1,0 +1,97 @@
+83:static void caseBegin(const char* name) {
+366:  caseBegin("§6(a) sinkFor 是唯一决策点,练习模式恒 PanelOnly");
+388:  svc.setMode(AiMode::Practice);
+390:  svc.setMode(AiMode::Code);
+408:  caseBegin("§6(b) ai.cpp 源码里没有任何缓冲区写操作(grep 断言)");
+459:  CHECK(const_ref >= 3);   // buildContext / buildRequest / maybeAutoTrigger / askNow
+484:  caseBegin("key 为空:worker 线程未创建 + \"未配置\" 提示 + 不崩");
+500:    // askNow:不崩,且给出"未配置"提示
+501:    svc.askNow(b, Pos{3, 5}, "");
+509:    svc.setMode(AiMode::Code);
+510:    svc.noteActivity();
+512:    for (int i = 0; i < 50; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+519:    svc.noteActivity();
+520:    svc.cancelInFlight();
+525:    svc.maybeAutoTrigger(empty, Pos{0, 0});
+544:// 3. 取消语义:generation 过滤 / 切模式 / cancelInFlight
+548:  caseBegin("取消:noteActivity / setMode / cancelInFlight 都让在飞回复不落地");
+555:  // (a) noteActivity 之后,任何事件的 gen 都不等于当前 generation()
+559:    svc.setMode(AiMode::Code);
+561:    svc.askNow(b, Pos{3, 5}, "");
+564:    svc.noteActivity();                   // 立刻作废
+580:  // (b) setMode 切模式:旧回复不落地,且新模式下 sink 立刻变了
+584:    svc.setMode(AiMode::Code);
+586:    svc.askNow(b, Pos{3, 5}, "");
+589:    svc.setMode(AiMode::Practice);        // §6(3):先 gen_++
+602:  // (c) cancelInFlight
+606:    svc.setMode(AiMode::Code);
+608:    svc.askNow(b, Pos{3, 5}, "");
+611:    svc.cancelInFlight();
+613:    CHECK_M(waitInFlight(svc, false, 4000), "cancelInFlight 没生效");
+626:    svc.setMode(AiMode::Code);
+628:    svc.askNow(b, Pos{3, 5}, "");     // 第一个进 worker
+629:    svc.askNow(b, Pos{3, 5}, "");     // 第二个排队;同时作废了第一个
+630:    svc.noteActivity();               // 把排队中的那个也作废
+647:  caseBegin("不卡死:worker 卡在网络上时 UI 线程调用 < 5ms");
+657:  svc.setMode(AiMode::Code);
+664:  svc.askNow(b, Pos{1000, 3}, "");
+684:  measure("noteActivity", [&] { svc.noteActivity(); });
+685:  measure("maybeAutoTrigger", [&] { svc.maybeAutoTrigger(b, Pos{1000, 3}); });
+686:  measure("askNow", [&] { svc.askNow(b, Pos{1000, 3}, "怎么优化"); });
+690:  measure("mode/setMode", [&] { (void)svc.toggleMode(); });
+691:  measure("cancelInFlight", [&] { svc.cancelInFlight(); });
+705:  caseBegin("错误路径(本地):401 / 超时 / 空回复 都给中文提示且不含 key");
+716:    svc.setMode(AiMode::Code);
+718:    svc.askNow(b, Pos{3, 5}, "");
+743:    svc.setMode(AiMode::Code);
+746:    svc.askNow(b, Pos{3, 5}, "");
+766:    svc.setMode(AiMode::Code);
+768:    svc.askNow(b, Pos{3, 5}, "");
+785:    svc.setMode(AiMode::Code);
+787:    svc.askNow(b, Pos{3, 5}, "");
+798:  caseBegin("错误路径(真实网络):假 key 打 api.deepseek.com / 不可解析域名");
+805:    svc.setMode(AiMode::Practice);
+807:    svc.askNow(b, Pos{3, 5}, "这题怎么想");
+828:  svc.setMode(AiMode::Code);
+830:  svc.askNow(b, Pos{3, 5}, "");
+858:  caseBegin("析构安全:在飞时析构不崩不死锁 + 反复构造析构 50 次");
+867:    svc->setMode(AiMode::Code);
+869:    svc->askNow(b, Pos{3, 5}, "");
+886:      svc.setMode(AiMode::Code);
+887:      svc.askNow(b, Pos{3, 5}, "");   // 一半的轮次带着在飞请求析构
+898:    svc.setMode(AiMode::Code);
+899:    for (int i = 0; i < 20; ++i) svc.askNow(b, Pos{3, 5}, "");
+909:  caseBegin("触发与限流:打字期间不发;满足条件只发一个");
+921:  svc.setMode(AiMode::Practice);
+922:  svc.noteActivity();
+924:  for (int i = 0; i < 20; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+929:  svc.setMode(AiMode::Code);
+931:    svc.noteActivity();
+932:    svc.maybeAutoTrigger(b, Pos{3, 5});
+941:  for (int i = 0; i < 20; ++i) svc.maybeAutoTrigger(blank, Pos{0, 0});
+946:  svc.noteActivity();
+948:  for (int i = 0; i < 200; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+959:  for (int i = 0; i < 50; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+963:  // (f) 手动 askNow 无视 min_interval
+964:  svc.askNow(b, Pos{3, 5}, "");
+967:  CHECK_M(srv.hits.load() == 2, "askNow 被 min_interval 挡住了");
+976:  caseBegin("后处理:剥围栏 / 去重复前缀 / 截行 / 去尾部空行");
+1037:  caseBegin("上下文截断:1000 行 + ai_max_context_lines=100");
+1133:  caseBegin("端到端(练习模式):每个事件 sink 恒为 PanelOnly,reasoning 被追加");
+1140:  svc.setMode(AiMode::Practice);
+1142:  svc.askNow(b, Pos{3, 5}, "这题怎么想");
+1174:  caseBegin("端到端(写代码模式):sink=GhostText,AiDone 是后处理结果,reasoning 被丢弃");
+1182:  svc.setMode(AiMode::Code);
+1184:  svc.askNow(b, Pos{3, 5}, "");
+1210:  caseBegin("背压:几百个微增量最多每 40ms 合成一个事件");
+1222:  svc.setMode(AiMode::Code);
+1225:  svc.askNow(b, Pos{3, 5}, "");
+1250:  caseBegin("非流式回退 / 模式名 / 状态文案 / 空 out_ 指针");
+1260:  svc.setMode(AiMode::Code);
+1262:  svc.askNow(b, Pos{3, 5}, "");
+1286:    svc2.askNow(b2, Pos{3, 5}, "");
+1287:    svc2.maybeAutoTrigger(b2, Pos{3, 5});
+1294:    svc3.setMode(AiMode::Code);
+1295:    svc3.askNow(b3, Pos{3, 5}, "");
+1308:    svc4.noteActivity();
+1310:    svc4.cancelInFlight();

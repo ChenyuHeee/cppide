@@ -1,0 +1,398 @@
+#!/bin/sh
+# desc: Wave 5 总验证 —— 任务 A(6 项裁决)+ 任务 B(9 项敌意路径)+ 任务 C 一把跑完
+#
+# 用法:  .flower/scripts/wave5-verify.sh [子集...]
+#   不给参数 = 全跑。子集名:build tests openpath appai a3 a5 a6 b1 b2 b3 b4 b5 b6 b7 c asan
+# 环境:  BIN(默认 /work/cppide)、ASANBIN(默认 /tmp/cppide-asan)
+#
+# ★ 绝不使用任何真实 API key:所有 AI 场景都用假 key + 本地假服务器 / 不可路由地址,
+#   并且每个子进程都被显式清掉 CPPIDE_API_KEY / DEEPSEEK_API_KEY。
+# ★ 每一条外部命令都有 timeout,任何一步挂住都会被判失败而不是把验证卡死。
+set -u
+
+ROOT=${ROOT:-/work}
+BIN=${BIN:-$ROOT/cppide}
+ASANBIN=${ASANBIN:-/tmp/cppide-asan}
+S=$ROOT/.flower/scripts
+W=${W:-/tmp/wave5}
+PTY=$W/pty5
+FAIL=0
+mkdir -p "$W"
+
+say()  { printf '\n==================== %s ====================\n' "$*"; }
+ok()   { printf '  PASS  %s\n' "$*"; }
+bad()  { printf '  FAIL  %s\n' "$*"; FAIL=$((FAIL + 1)); }
+want() { if [ "$1" = 0 ]; then ok "$2"; else bad "$2 (rc=$1)"; fi; }
+
+wants() { # 子集是否要跑
+  [ $# -eq 0 ] && return 0
+  for a in $ARGS; do [ "$a" = "$1" ] && return 0; done
+  return 1
+}
+ARGS=${*:-}
+if [ -z "$ARGS" ]; then ARGS="build tests openpath appai a2 a3 a5 a6 b1 b2 b3 b4 b5 b6 b7 c asan"; fi
+
+# ------------------------------------------------------------------ 样本文件
+mkfixtures() {
+  printf 'int main(){return 0;}\n' > "$W/trivial.cpp"
+  printf '#include <cstdio>\nint main(){ std::printf("HELLO_A6\\n"); return 0; }\n' > "$W/a6.cpp"
+  printf 'int main() { while (1) { } }\n' > "$W/spin.cpp"
+  python3 - "$W" <<'PYEOF'
+import sys, os
+w = sys.argv[1]
+# 100MB 输出
+open(os.path.join(w, 'flood.cpp'), 'w').write('''#include <cstdio>
+int main() {
+  static char buf[1024 * 1024];
+  for (int b = 0; b < 100; ++b) {
+    for (int i = 0; i + 80 <= (int)sizeof(buf); i += 80) {
+      std::snprintf(buf + i, 80, "FLOODLINE %08d %s", b * 13107 + i / 80,
+                    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+      buf[i + 79] = '\\n';
+    }
+    std::fwrite(buf, 1, sizeof(buf), stdout);
+  }
+  std::fflush(stdout);
+  return 0;
+}
+''')
+# -O2 下要编 ~25s 的 6 万行文件(A3 的"编译卡住"场景)
+lines = ['#include <cstdio>', 'long long f(long long x) {']
+for i in range(1, 60001):
+    lines.append('  x = x * %d + %d; x ^= (x >> %d);' % (i % 97 + 3, i % 1013, i % 31 + 1))
+lines += ['  return x;', '}', 'int main(){ std::printf("%lld\\n", f(1)); return 0; }']
+open(os.path.join(w, 'slowcompile.cpp'), 'w').write('\n'.join(lines) + '\n')
+# 5 万行大文件
+lines = ['#include <cstdio>', '// 5 万行大文件']
+for i in range(1, 50001):
+    if i % 17 == 0:
+        lines.append('// 注释行 %d —— 中文注释也要参与显示宽度计算' % i)
+    elif i % 23 == 0:
+        lines.append('const char* s%d = "字符串 %d /*not a comment*/";' % (i, i))
+    elif i % 31 == 0:
+        lines.append('#define MACRO_%d(x) ((x) * %d + 1)' % (i, i))
+    else:
+        lines.append('static inline long long fn_%d(long long x) { return x * %d + %d; }'
+                     % (i, i % 97 + 1, i % 13))
+lines.append('int main() { std::printf("BIGFILE_OK\\n"); return 0; }')
+os.makedirs(os.path.join(w, 'big'), exist_ok=True)
+open(os.path.join(w, 'big', 'big50k.cpp'), 'w').write('\n'.join(lines) + '\n')
+# 查找/帮助样本:第 5 / 40 / 120 行有 NEEDLE_TARGET
+lines = []
+for i in range(1, 201):
+    lines.append(('int NEEDLE_TARGET_%d = %d;' if i in (5, 40, 120) else 'int filler_%d = %d;')
+                 % (i, i))
+open(os.path.join(w, 'findhelp.cpp'), 'w').write('\n'.join(lines) + '\n')
+# 300 行的键位探测样本
+open(os.path.join(w, 'keys.cpp'), 'w').write(
+    '\n'.join('int a%d = %d;' % (i, i) for i in range(1, 301)) + '\n')
+# 非法 UTF-8
+d = bytearray('int main(){ // 合法中文 开头\n'.encode('utf-8'))
+d += b'  // \xff\xfe\x80\x81 \xc3 \xe4\xb8 \xf0\x9f \xed\xa0\x80\n'
+d += b'  char *s = "\xc0\xaf\xe0\x80\xaf";\n'
+d += b'  \x00\x01\x02\x03\x07\x0b\x0c\x1b[31m\n'
+d += 'return 0; }\n'.encode('utf-8')
+open(os.path.join(w, 'badutf8.cpp'), 'wb').write(bytes(d))
+PYEOF
+  head -c 400000 "$BIN" > "$W/binary.cpp"
+  # 配置(全是假 key / 不可路由地址)
+  cat > "$W/cfg-badkey.json" <<'EOF'
+{ "api_key": "sk-FAKE-not-a-real-key-0000000000000000", "model": "fake-model",
+  "base_url": "http://127.0.0.1:9", "stream": true,
+  "ghost_delay_ms": 300, "ghost_min_interval_ms": 300,
+  "ai_connect_timeout_ms": 2000, "ai_timeout_ms": 5000,
+  "cc": "cc", "cxx": "c++", "tick_ms": 60 }
+EOF
+  python3 - "$W" <<'PYEOF'
+import json, sys, os
+w = sys.argv[1]
+c = json.load(open(os.path.join(w, 'cfg-badkey.json')))
+for name, patch in [('cfg-longrun.json', {'run_timeout_ms': 60000}),
+                    ('cfg-shortrun.json', {'run_timeout_ms': 3000}),
+                    ('cfg-bigout.json', {'run_timeout_ms': 60000,
+                                         'run_output_limit': 104857600}),
+                    ('cfg-blackhole.json', {'base_url': 'http://10.255.255.1:9',
+                                            'ai_connect_timeout_ms': 30000,
+                                            'ai_timeout_ms': 60000})]:
+    d = dict(c); d.update(patch)
+    json.dump(d, open(os.path.join(w, name), 'w'), ensure_ascii=False, indent=1)
+PYEOF
+}
+
+
+# 有没有命令行里含某个模式的活进程?直接读 /proc(本容器里既没有 pgrep 也没有 ps)。
+# macOS 上没有 /proc,那里会退回用 pgrep;两者都没有就打印"跳过"。
+orphans() { # orphans <模式>
+  if [ -d /proc ]; then
+    python3 - "$1" <<'PY'
+import os, sys
+pat = sys.argv[1].encode()
+me = os.getpid()
+hits = []
+for d in os.listdir('/proc'):
+    if not d.isdigit() or int(d) == me:
+        continue
+    try:
+        with open('/proc/%s/cmdline' % d, 'rb') as f:
+            cl = f.read()
+    except OSError:
+        continue
+    if pat in cl:
+        hits.append(d + ' ' + cl.replace(b'\0', b' ').decode('utf-8', 'replace')[:120])
+for h in hits:
+    print(h)
+sys.exit(1 if hits else 0)
+PY
+    return $?
+  fi
+  if command -v pgrep > /dev/null 2>&1; then pgrep -f "$1" > /dev/null 2>&1; return $?; fi
+  return 2   # 无法判断
+}
+
+check_no_orphans() { # check_no_orphans <模式> <说明>
+  out=$(orphans "$1"); rc=$?
+  case $rc in
+    0) ok "$2:没有残留进程" ;;
+    1) bad "$2:仍有残留进程 -> $out" ;;
+    *) printf '  跳过 %s 的孤儿进程检查(既无 /proc 也无 pgrep)\n' "$2" ;;
+  esac
+}
+
+drive() { # drive <rows> <cols> <script> <out> <bin> <cfg> <file> [超时秒]
+  r=$1; c=$2; sc=$3; out=$4; b=$5; cfg=$6; f=$7; to=${8:-300}
+  CPPIDE_API_KEY= DEEPSEEK_API_KEY= \
+    timeout "$to" "$PTY" "$r" "$c" "$sc" "$out" -- "$b" --config "$cfg" "$f"
+}
+
+# ------------------------------------------------------------------- build
+if wants build; then
+  say "构建(零 warning 是硬要求)"
+  timeout 900 make -C "$ROOT" 2>&1 | tee "$W/build.log" | tail -3
+  if grep -qi "warning" "$W/build.log"; then bad "make 有 warning"; else ok "make 零 warning"; fi
+  timeout 900 make -C "$ROOT" check-headers > "$W/hdr.log" 2>&1
+  want $? "make check-headers"
+  timeout 300 g++ -std=c++17 -O2 -Wall -Wextra -o "$PTY" "$S/wave5-pty-drive.cpp" -lutil
+  want $? "编译 pty 驱动器"
+  timeout 300 g++ -std=c++17 -O2 -Wall -Wextra -o "$W/exitloop" "$S/wave5-exit-loop.cpp" -lutil
+  want $? "编译退出循环 harness"
+fi
+[ -x "$PTY" ] || { timeout 300 g++ -std=c++17 -O2 -Wall -Wextra -o "$PTY" "$S/wave5-pty-drive.cpp" -lutil; }
+[ -x "$W/exitloop" ] || { timeout 300 g++ -std=c++17 -O2 -Wall -Wextra -o "$W/exitloop" "$S/wave5-exit-loop.cpp" -lutil; }
+mkfixtures
+
+# ------------------------------------------------------------------- tests
+if wants tests; then
+  say "make tests(含新增 test_appai / test_openpath)"
+  timeout 1800 make -C "$ROOT" tests > "$W/tests.log" 2>&1
+  want $? "make tests 全过(详见 $W/tests.log)"
+fi
+
+# ---------------------------------------------------- 任务 A① AiDone 替换语义
+if wants appai; then
+  say "任务 A① AiDone = 替换(内容只出现一次)"
+  timeout 300 sh -c "cd '$ROOT' && g++ -Isrc -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter \
+     -o '$W/test_appai' tests/test_appai.cpp \$(ls src/*.o | grep -v main.o) \
+     -lncursesw -lcurl -lpthread" && timeout 120 "$W/test_appai"
+  want $? "tests/test_appai"
+fi
+
+# ---------------------------------------------------- 任务 A② 新文件/坏路径
+if wants openpath; then
+  say "任务 A② 不存在的文件按新文件打开 + 四条报错分支"
+  timeout 300 sh -c "cd '$ROOT' && g++ -Isrc -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter \
+     -o '$W/test_openpath' tests/test_openpath.cpp \$(ls src/*.o | grep -v main.o) \
+     -lncursesw -lcurl -lpthread" && CPPIDE_BIN="$BIN" timeout 600 "$W/test_openpath"
+  want $? "tests/test_openpath"
+  # root 下 chmod 000 无效,单独用 setpriv 验"存在但读不了"
+  if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null 2>&1; then
+    mkdir -p "$W/ro"; printf 'int main(){}\n' > "$W/ro/unread.cpp"; chmod 000 "$W/ro/unread.cpp"
+    chmod 755 "$W" "$W/ro"
+    msg=$(timeout 30 setpriv --reuid=65534 --regid=65534 --clear-groups \
+            "$BIN" "$W/ro/unread.cpp" < /dev/null 2>&1)
+    case "$msg" in *无法读取*) ok "不可读文件(以 nobody 身份)被拒且提示为「无法读取」" ;;
+                   *) bad "不可读文件的提示不对: $msg" ;; esac
+  fi
+fi
+
+# ---------------------------------------------------- 任务 A② 新文件端到端
+if wants a2; then
+  say "任务 A② 新文件端到端:打字 -> Ctrl-O 真的创建出文件 -> 能编译运行"
+  rm -rf "$W/nf"; mkdir -p "$W/nf"
+  drive 24 80 "$S/wave5-a2-newfile.txt" "$W/a2.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/nf/brand_new.cpp" 300
+  want $? "A2 pty 脚本"
+  if [ -s "$W/nf/brand_new.cpp" ]; then ok "Ctrl-O 真的把新文件创建出来了"
+  else bad "Ctrl-O 之后文件仍然不存在/为空"; fi
+fi
+
+# ---------------------------------------------------- 任务 A③ 编译 Esc 终止
+if wants a3; then
+  say "任务 A③ 编译进行中 Esc 终止编译作业"
+  cp "$W/slowcompile.cpp" "$W/slow1.cpp"
+  drive 24 80 "$S/wave5-a3-compile-esc.txt" "$W/a3.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/slow1.cpp" 300
+  want $? "A3 pty 脚本"
+  # ★ 不能写成 `if pgrep ...; then bad; else ok; fi`:精简镜像里没有 pgrep,
+  #   `if` 会失败并静默走到 else,变成一个永远 PASS 的假断言(本容器就是这样)。
+  check_no_orphans "slow1.cpp" "Esc 终止编译之后"
+fi
+
+# ---------------------------------------------------- 任务 A⑤ 退出不挂住
+if wants a5; then
+  say "任务 A⑤ 100 次「启动 -> Ctrl-X -> 退出」"
+  timeout 900 "$W/exitloop" 100 10000 "$BIN" "$W/trivial.cpp" > "$W/exit100.log" 2>&1
+  want $? "干净场景 100 轮无卡住(详见 $W/exit100.log)"
+  tail -4 "$W/exit100.log" | sed 's/^/      /'
+  say "任务 A⑤b 退出时还有在飞 AI 请求(连不上的地址,30s 连接超时)"
+  CPPIDE_EXIT_LOOP_PREKEYS="$(printf '\024int a = ')" CPPIDE_EXIT_LOOP_PREWAIT=1500 \
+    timeout 900 "$W/exitloop" 40 10000 "$BIN" --config "$W/cfg-blackhole.json" \
+      "$W/trivial.cpp" > "$W/exit-ai.log" 2>&1
+  want $? "在飞 AI 请求场景 40 轮无卡住(详见 $W/exit-ai.log)"
+  tail -4 "$W/exit-ai.log" | sed 's/^/      /'
+fi
+
+# ---------------------------------------------------- 任务 A⑥ Tab 轮换标签
+if wants a6; then
+  say "任务 A⑥ 面板聚焦时 Tab 轮换标签(启发式够用吗)"
+  drive 24 80 "$S/wave5-a6-tab-cycle.txt" "$W/a6.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/a6.cpp" 300
+  want $? "A6 pty 脚本(编译->运行->AI->输入->编译 四步全部换对)"
+fi
+
+# ---------------------------------------------------- 任务 B① 布局与缩放
+if wants b1; then
+  say "任务 B① 80x24 / 60x16 布局 + 400 次猛拉缩放"
+  cp "$W/trivial.cpp" "$W/b1.cpp"
+  drive 24 80 "$S/wave5-b1-resize.txt" "$W/b1.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/b1.cpp" 300
+  want $? "B1 pty 脚本"
+  say "顺带:方向键在 DECCKM 与普通模式下都必须是方向键"
+  drive 24 80 "$S/wave5-keyprobe-cursor.txt" "$W/keys.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/keys.cpp" 200
+  want $? "ESC[A/B/C/D 与 ESC O A/B/C/D 都被识别为方向键"
+fi
+
+# ---------------------------------------------------- 任务 B② 死循环程序
+if wants b2; then
+  say "任务 B② 死循环程序:Esc 终止 + run_timeout_ms 兜底(两条路都测)"
+  drive 24 80 "$S/wave5-b2-esc-kill.txt" "$W/b2.out" "$BIN" "$W/cfg-longrun.json" \
+        "$W/spin.cpp" 300
+  want $? "B2a Esc 终止"
+  drive 24 80 "$S/wave5-b2b-timeout.txt" "$W/b2b.out" "$BIN" "$W/cfg-shortrun.json" \
+        "$W/spin.cpp" 300
+  want $? "B2b run_timeout_ms 兜底"
+  check_no_orphans "cppide-" "死循环程序被终止之后"
+fi
+
+# ---------------------------------------------------- 任务 B③ 100MB 输出
+if wants b3; then
+  say "任务 B③ 100MB 输出(三种口径)"
+  drive 24 80 "$S/wave5-b3-flood.txt" "$W/b3.out" "$BIN" "$W/cfg-longrun.json" \
+        "$W/flood.cpp" 400
+  want $? "B3a 默认 run_output_limit:撞 hard_kill、面板截断、编辑器活着"
+  drive 24 80 "$S/wave5-b3b-midflood.txt" "$W/b3b.out" "$BIN" "$W/cfg-longrun.json" \
+        "$W/flood.cpp" 400 2> /dev/null || true
+  drive 24 80 "$S/wave5-b3c-real100mb.txt" "$W/b3c.out" "$BIN" "$W/cfg-bigout.json" \
+        "$W/flood.cpp" 500
+  want $? "B3c run_output_limit=100MB:整整 100MB 真的进编辑器,量峰值 RSS"
+  grep -h "^rss" "$W/b3c.out" 2> /dev/null || true
+fi
+
+# ---------------------------------------------------- 任务 B④ 三种 AI 异常态
+if wants b4; then
+  say "任务 B④ 无网络 / 错 key / 无配置"
+  BIN="$BIN" PTY="$PTY" WORK="$W/b4" timeout 900 "$S/wave5-b4-ai-states.sh" > "$W/b4.log" 2>&1
+  want $? "B4 三态(详见 $W/b4.log)"
+  grep -E "^  (PASS|FAIL)|bench" "$W/b4.log" | sed 's/^/      /' | head -30
+fi
+
+# ---------------------------------------------------- 任务 B⑤ 5 万行大文件
+if wants b5; then
+  say "任务 B⑤ 5 万行大文件:滚动 / 跳尾 / 连按 20 次回车"
+  drive 24 80 "$S/wave5-b5-bigfile.txt" "$W/b5.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/big/big50k.cpp" 500
+  want $? "B5 pty 脚本"
+fi
+
+# ---------------------------------------------------- 任务 B⑥ 二进制 / 坏 UTF-8
+if wants b6; then
+  say "任务 B⑥ 二进制文件 / 含非法 UTF-8 的文件"
+  drive 24 80 "$S/wave5-b6-binary-utf8.txt" "$W/b6a.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/badutf8.cpp" 300
+  want $? "B6a 非法 UTF-8"
+  drive 24 80 "$S/wave5-b6-binary-utf8.txt" "$W/b6b.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/binary.cpp" 400
+  want $? "B6b 400KB 二进制"
+fi
+
+# ---------------------------------------------------- 任务 B⑦ 保存失败
+if wants b7; then
+  say "任务 B⑦ 只读文件 / 不可写目录:中文报错、不崩、不丢数据"
+  if [ "$(id -u)" = 0 ] && command -v setpriv > /dev/null 2>&1; then
+    rm -rf "$W/b7"; mkdir -p "$W/b7/ro" "$W/b7/out"
+    printf '#include <cstdio>\nint main(){return 0;}\n' > "$W/b7/ro/readonly.cpp"
+    chmod 444 "$W/b7/ro/readonly.cpp"; chmod 555 "$W/b7/ro"
+    chmod 777 "$W/b7/out"; cp "$W/cfg-badkey.json" "$W/b7/cfg.json"; chmod 644 "$W/b7/cfg.json"
+    CPPIDE_API_KEY= DEEPSEEK_API_KEY= timeout 300 setpriv --reuid=65534 --regid=65534 \
+      --clear-groups "$PTY" 24 80 "$S/wave5-b7-readonly.txt" "$W/b7/out/b7.out" \
+      -- "$BIN" --config "$W/b7/cfg.json" "$W/b7/ro/readonly.cpp"
+    want $? "B7 pty 脚本(以 nobody 身份)"
+    if grep -q "int main(){return 0;}" "$W/b7/ro/readonly.cpp"; then
+      ok "只读源文件内容未被改动"
+    else bad "只读源文件竟然被改了"; fi
+    if ls "$W/b7/ro" | grep -q "cppide.tmp"; then bad "留下了 .cppide.tmp 残骸"
+    else ok "没有 .cppide.tmp 残骸"; fi
+  else
+    printf '  跳过:需要 root + setpriv 才能构造"当前用户写不了"的场景\n'
+  fi
+fi
+
+# ---------------------------------------------------- 任务 C 查找 / 帮助
+if wants c; then
+  say "任务 C Ctrl-F 查找 与 F1 帮助浮层(含分页)"
+  drive 24 80 "$S/wave5-c-find-help.txt" "$W/c.out" "$BIN" "$W/cfg-badkey.json" \
+        "$W/findhelp.cpp" 400
+  want $? "C pty 脚本"
+fi
+
+# ---------------------------------------------------- 任务 B⑧ ASan/UBSan
+if wants asan; then
+  say "任务 B⑧ ASan/UBSan 下重跑 B1 / B2 / B4"
+  if [ ! -x "$ASANBIN" ]; then
+    printf '  跳过:找不到 %s。先跑:\n' "$ASANBIN"
+    printf '    rm -rf /tmp/dbgsrc && cp -r %s/src /tmp/dbgsrc && rm -f /tmp/dbgsrc/*.o &&\n' "$ROOT"
+    printf '    (cd /tmp/dbgsrc && for f in *.cpp; do g++ -I. -std=c++17 -O0 -g \\\n'
+    printf '       -fsanitize=address,undefined -Wall -Wextra -Wno-unused-parameter \\\n'
+    printf '       -c -o ${f%%.cpp}.o $f || exit 1; done) &&\n'
+    printf '    g++ -fsanitize=address,undefined -o %s /tmp/dbgsrc/*.o -lncursesw -lcurl -lpthread\n' "$ASANBIN"
+  else
+    rm -f "$W"/asan-*.log*
+    ASAN_OPTIONS=detect_leaks=1:log_path=$W/asan-b1.log \
+      UBSAN_OPTIONS=print_stacktrace=1 \
+      drive 24 80 "$S/wave5-b1-resize.txt" "$W/b1-asan.out" "$ASANBIN" \
+            "$W/cfg-badkey.json" "$W/b1.cpp" 500
+    want $? "ASan: B1 缩放风暴"
+    ASAN_OPTIONS=detect_leaks=1:log_path=$W/asan-b2.log \
+      UBSAN_OPTIONS=print_stacktrace=1 \
+      drive 24 80 "$S/wave5-b2-esc-kill.txt" "$W/b2-asan.out" "$ASANBIN" \
+            "$W/cfg-longrun.json" "$W/spin.cpp" 500
+    want $? "ASan: B2a 死循环 + Esc"
+    ASAN_OPTIONS=detect_leaks=1:log_path=$W/asan-b2b.log \
+      UBSAN_OPTIONS=print_stacktrace=1 \
+      drive 24 80 "$S/wave5-b2b-timeout.txt" "$W/b2b-asan.out" "$ASANBIN" \
+            "$W/cfg-shortrun.json" "$W/spin.cpp" 500
+    want $? "ASan: B2b 超时兜底"
+    ASAN_OPTIONS=detect_leaks=1:log_path=$W/asan-b4.log UBSAN_OPTIONS=print_stacktrace=1 \
+      BIN="$ASANBIN" PTY="$PTY" WORK="$W/b4asan" timeout 1200 "$S/wave5-b4-ai-states.sh" \
+        > "$W/b4-asan.log" 2>&1
+    want $? "ASan: B4 三种 AI 异常态(详见 $W/b4-asan.log)"
+    if ls "$W"/asan-*.log* > /dev/null 2>&1; then
+      bad "ASan/UBSan 有报告:"; ls "$W"/asan-*.log* | sed 's/^/        /'
+    else
+      ok "ASan/UBSan 全程零报告(无泄漏、无 UB)"
+    fi
+  fi
+fi
+
+say "Wave 5 汇总:失败 $FAIL 条"
+exit $([ "$FAIL" = 0 ] && echo 0 || echo 1)

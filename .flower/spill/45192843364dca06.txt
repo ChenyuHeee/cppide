@@ -1,0 +1,70 @@
+1	# cppide 实现架构设计
+2	
+3	> 依据:`.flower/notes/需求.md`(冻结)。本文件是实现期的唯一接口权威。
+4	> 头文件在 Wave 1 冻结,之后任何签名变更必须由协调者统一改。
+5	
+6	## 0. 技术决策摘要
+7	
+8	| 项 | 决策 | 理由 |
+9	|---|---|---|
+10	| 语言 | C++17 | macOS 自带工具链可直接编译 |
+11	| 渲染 | ncurses(宽字符)| 系统自带;AI 面板要显示中文,必须走 `wget_wch`/`waddnwstr` |
+12	| HTTP | libcurl | macOS 自带 |
+13	| JSON | 自写 `src/json.{h,cpp}` | 不联网下载、不引外部依赖 |
+14	| 构建 | 手写 Makefile | 不引 CMake |
+15	| 平台 API | 仅 POSIX + ncurses + libcurl | 无 macOS 独有 API,可在 Linux 容器编译验证 |
+16	| 可执行名 | `cppide` | `icpc` 会与 Intel 编译器冲突,`cpp` 是预处理器;`cppide` 无冲突 |
+17	| 选区 | **不做** | 需求未要求;终端自身的鼠标选择 + Cmd-C 已够。改为行级操作(剪切行/粘贴行/复制行) |
+18	| 子进程 | `fork`+`execvp`+`poll`,**绝不用 popen/system** | 需要 pid(超时 kill)、双向管道、stdout/stderr 分离、退出状态、不经过 `/bin/sh` |
+19	
+20	> 开发期注意:Linux 容器需先 `apt-get install build-essential libncursesw5-dev libcurl4-openssl-dev`。
+21	
+22	---
+23	
+24	## 1. 文件划分
+25	
+26	```
+27	Makefile
+28	README.md
+29	src/
+30	  main.cpp        90    进程入口:locale / SIGPIPE / curl global / endwin 安全网 / argv
+31	  app.h  150      AppModel + App 类声明
+32	  app.cpp 570     主循环、按键分派、事件排空、编译/运行/AI 编排
+33	  ui.h   140      Ui 渲染器声明 + Theme
+34	  ui.cpp 570      ncurses 初始化与全部绘制(编辑区/行号/ghost/面板/状态栏/提示行/帮助)
+35	  editor.h 180    Editor:光标、视口、编辑操作、Ghost
+36	  editor.cpp 540
+37	  textbuf.h 150   TextBuffer:行数组 + 撤销
+38	  textbuf.cpp 430
+39	  highlight.h 90  Highlighter(纯函数)+ HighlightCache(行首状态缓存)
+40	  highlight.cpp 400
+41	  panel.h 120     Panel(输出面板)+ StdinBuffer
+42	  panel.cpp 300
+43	  proc.h 130      ProcSpec / ProcResult / runProcess / Runner(后台线程)
+44	  proc.cpp 420
+45	  build.h 130     Diag / Builder:命令装配 + 诊断解析
+46	  build.cpp 380
+47	  aihttp.h 100    ChatRequest / ChatResponse / HttpChat / SseParser
+48	  aihttp.cpp 380
+49	  ai.h   160      AiMode / AiSink / AiRequest / AiService
+50	  ai.cpp 430
+51	  config.h 120    Config + ConfigLoader
+52	  config.cpp 270
+53	  json.h 130      mj::Value 声明
+54	  json.cpp 420    极简 JSON 实现
+55	  mailbox.h 140   Mailbox<T> 线程安全队列(header-only)
+56	  keys.h 130      Action 枚举 + 绑定表 + Ctrl()/Alt()
+57	  keys.cpp 190
+58	  util.h 90 / util.cpp 230   字符串/路径/文件/时间/UTF-8
+59	tests/
+60	  test_json.cpp test_highlight.cpp test_diag.cpp test_sse.cpp test_proc.cpp  ~300
+61	```
+62	
+63	模块依赖(单向,无环):
+64	
+65	```
+66	main -> app -> {ui, editor, panel, ai, build, proc, config, keys}
+67	ui   -> {editor, panel, highlight, keys, util, app.h(仅 AppModel)}
+68	ai   -> {aihttp, config, textbuf, mailbox, json}
+69	build-> {proc, config, util}
+70	editor->{textbuf, highlight, util, ai.h(仅 AiSink 枚举)}

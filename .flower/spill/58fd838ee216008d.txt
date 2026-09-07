@@ -1,0 +1,120 @@
+#!/bin/sh
+# desc: Wave 5 总验证 —— 任务 A(6 项裁决)+ 任务 B(9 项敌意路径)+ 任务 C 一把跑完
+#
+# 用法:  .flower/scripts/wave5-verify.sh [子集...]
+#   不给参数 = 全跑。子集名:build tests openpath appai a3 a5 a6 b1 b2 b3 b4 b5 b6 b7 c asan
+# 环境:  BIN(默认 /work/cppide)、ASANBIN(默认 /tmp/cppide-asan)
+#
+# ★ 绝不使用任何真实 API key:所有 AI 场景都用假 key + 本地假服务器 / 不可路由地址,
+#   并且每个子进程都被显式清掉 CPPIDE_API_KEY / DEEPSEEK_API_KEY。
+# ★ 每一条外部命令都有 timeout,任何一步挂住都会被判失败而不是把验证卡死。
+set -u
+
+ROOT=${ROOT:-/work}
+BIN=${BIN:-$ROOT/cppide}
+ASANBIN=${ASANBIN:-/tmp/cppide-asan}
+S=$ROOT/.flower/scripts
+W=${W:-/tmp/wave5}
+PTY=$W/pty5
+FAIL=0
+mkdir -p "$W"
+
+say()  { printf '\n==================== %s ====================\n' "$*"; }
+ok()   { printf '  PASS  %s\n' "$*"; }
+bad()  { printf '  FAIL  %s\n' "$*"; FAIL=$((FAIL + 1)); }
+want() { if [ "$1" = 0 ]; then ok "$2"; else bad "$2 (rc=$1)"; fi; }
+
+wants() { # 子集是否要跑
+  [ $# -eq 0 ] && return 0
+  for a in $ARGS; do [ "$a" = "$1" ] && return 0; done
+  return 1
+}
+ARGS=${*:-}
+if [ -z "$ARGS" ]; then ARGS="build tests openpath appai a2 a3 a5 a6 b1 b2 b3 b4 b5 b6 b7 c asan"; fi
+
+# ------------------------------------------------------------------ 样本文件
+mkfixtures() {
+  printf 'int main(){return 0;}\n' > "$W/trivial.cpp"
+  printf '#include <cstdio>\nint main(){ std::printf("HELLO_A6\\n"); return 0; }\n' > "$W/a6.cpp"
+  printf 'int main() { while (1) { } }\n' > "$W/spin.cpp"
+  python3 - "$W" <<'PYEOF'
+import sys, os
+w = sys.argv[1]
+# 100MB 输出
+open(os.path.join(w, 'flood.cpp'), 'w').write('''#include <cstdio>
+int main() {
+  static char buf[1024 * 1024];
+  for (int b = 0; b < 100; ++b) {
+    for (int i = 0; i + 80 <= (int)sizeof(buf); i += 80) {
+      std::snprintf(buf + i, 80, "FLOODLINE %08d %s", b * 13107 + i / 80,
+                    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+      buf[i + 79] = '\\n';
+    }
+    std::fwrite(buf, 1, sizeof(buf), stdout);
+  }
+  std::fflush(stdout);
+  return 0;
+}
+''')
+# -O2 下要编 ~25s 的 6 万行文件(A3 的"编译卡住"场景)
+lines = ['#include <cstdio>', 'long long f(long long x) {']
+for i in range(1, 60001):
+    lines.append('  x = x * %d + %d; x ^= (x >> %d);' % (i % 97 + 3, i % 1013, i % 31 + 1))
+lines += ['  return x;', '}', 'int main(){ std::printf("%lld\\n", f(1)); return 0; }']
+open(os.path.join(w, 'slowcompile.cpp'), 'w').write('\n'.join(lines) + '\n')
+# 5 万行大文件
+lines = ['#include <cstdio>', '// 5 万行大文件']
+for i in range(1, 50001):
+    if i % 17 == 0:
+        lines.append('// 注释行 %d —— 中文注释也要参与显示宽度计算' % i)
+    elif i % 23 == 0:
+        lines.append('const char* s%d = "字符串 %d /*not a comment*/";' % (i, i))
+    elif i % 31 == 0:
+        lines.append('#define MACRO_%d(x) ((x) * %d + 1)' % (i, i))
+    else:
+        lines.append('static inline long long fn_%d(long long x) { return x * %d + %d; }'
+                     % (i, i % 97 + 1, i % 13))
+lines.append('int main() { std::printf("BIGFILE_OK\\n"); return 0; }')
+os.makedirs(os.path.join(w, 'big'), exist_ok=True)
+open(os.path.join(w, 'big', 'big50k.cpp'), 'w').write('\n'.join(lines) + '\n')
+# 查找/帮助样本:第 5 / 40 / 120 行有 NEEDLE_TARGET
+lines = []
+for i in range(1, 201):
+    lines.append(('int NEEDLE_TARGET_%d = %d;' if i in (5, 40, 120) else 'int filler_%d = %d;')
+                 % (i, i))
+open(os.path.join(w, 'findhelp.cpp'), 'w').write('\n'.join(lines) + '\n')
+# 300 行的键位探测样本
+open(os.path.join(w, 'keys.cpp'), 'w').write(
+    '\n'.join('int a%d = %d;' % (i, i) for i in range(1, 301)) + '\n')
+# 非法 UTF-8
+d = bytearray('int main(){ // 合法中文 开头\n'.encode('utf-8'))
+d += b'  // \xff\xfe\x80\x81 \xc3 \xe4\xb8 \xf0\x9f \xed\xa0\x80\n'
+d += b'  char *s = "\xc0\xaf\xe0\x80\xaf";\n'
+d += b'  \x00\x01\x02\x03\x07\x0b\x0c\x1b[31m\n'
+d += 'return 0; }\n'.encode('utf-8')
+open(os.path.join(w, 'badutf8.cpp'), 'wb').write(bytes(d))
+PYEOF
+  head -c 400000 "$BIN" > "$W/binary.cpp"
+  # 配置(全是假 key / 不可路由地址)
+  cat > "$W/cfg-badkey.json" <<'EOF'
+{ "api_key": "sk-FAKE-not-a-real-key-0000000000000000", "model": "fake-model",
+  "base_url": "http://127.0.0.1:9", "stream": true,
+  "ghost_delay_ms": 300, "ghost_min_interval_ms": 300,
+  "ai_connect_timeout_ms": 2000, "ai_timeout_ms": 5000,
+  "cc": "cc", "cxx": "c++", "tick_ms": 60 }
+EOF
+  python3 - "$W" <<'PYEOF'
+import json, sys, os
+w = sys.argv[1]
+c = json.load(open(os.path.join(w, 'cfg-badkey.json')))
+for name, patch in [('cfg-longrun.json', {'run_timeout_ms': 60000}),
+                    ('cfg-shortrun.json', {'run_timeout_ms': 3000}),
+                    ('cfg-bigout.json', {'run_timeout_ms': 60000,
+                                         'run_output_limit': 104857600}),
+                    ('cfg-blackhole.json', {'base_url': 'http://10.255.255.1:9',
+                                            'ai_connect_timeout_ms': 30000,
+                                            'ai_timeout_ms': 60000})]:
+    d = dict(c); d.update(patch)
+    json.dump(d, open(os.path.join(w, name), 'w'), ensure_ascii=False, indent=1)
+PYEOF
+}

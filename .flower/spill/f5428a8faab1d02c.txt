@@ -1,0 +1,105 @@
+
+struct ChatRequest {
+  std::string url, api_key, model;
+  std::vector<ChatMessage> messages;
+  double temperature = 0.2;
+  int    max_tokens  = 256;
+  bool   stream      = true;
+  int    connect_timeout_ms = 5000;
+  int    total_timeout_ms   = 20000;
+  std::vector<std::string> stop;
+  std::string toJson() const;                  // 用 mj::Value 生成,自动转义
+};
+
+using ChatDeltaFn  = std::function<bool(const std::string& delta)>;  // 返回 false 中止
+using ChatCancelFn = std::function<bool()>;                          // 由 curl 进度回调轮询
+
+struct ChatResponse {
+  bool ok = false;
+  std::string text;              // 拼接后的完整内容
+  std::string error;             // 中文,面向用户
+  long http_status = 0;
+  bool canceled = false, timed_out = false;
+  int64_t elapsed_ms = 0;
+  int prompt_tokens = 0, completion_tokens = 0;
+};
+
+class HttpChat {                 // 每线程一个实例,复用同一个 CURL* 句柄
+public:
+  HttpChat(); ~HttpChat();
+  static void globalInit();      // curl_global_init,必须在任何线程启动前于 main 调用
+  static void globalCleanup();
+  ChatResponse send(const ChatRequest& req,
+                    const ChatDeltaFn& on_delta,
+                    const ChatCancelFn& should_cancel);
+private:
+  void* curl_ = nullptr;         // CURL*,保持 void* 以免头文件引 curl.h
+  std::string sse_carry_;
+};
+
+class SseParser {                // 纯函数式,可单测
+public:
+  void feed(const char* p, size_t n,
+            const std::function<void(const std::string& payload)>& cb);
+  void reset();
+};
+```
+
+必须设置的 curl 选项(逐条都有理由):
+- `CURLOPT_NOSIGNAL = 1L` —— **多线程程序里是强制的**。否则 curl 的 DNS 超时走 `SIGALRM` + `siglongjmp`,在非主线程上会破坏状态甚至崩溃。
+- `CURLOPT_TIMEOUT_MS`、`CURLOPT_CONNECTTIMEOUT_MS`、`CURLOPT_LOW_SPEED_LIMIT=1` / `CURLOPT_LOW_SPEED_TIME=10`(卡死的流会自己死掉)。
+- `CURLOPT_NOPROGRESS = 0` + `CURLOPT_XFERINFOFUNCTION` → 回调里查 `should_cancel()`,非 0 返回即刻中止。这是"用户继续打字 → 请求立即作废"的实现点。
+- `CURLOPT_HTTPHEADER`:`Authorization: Bearer <key>`、`Content-Type: application/json`、流式时 `Accept: text/event-stream`。
+- `CURLOPT_VERBOSE` 恒为 0。**API key 绝不出现在面板、日志、错误消息里**。
+- SSE 解析:帧为 `data: {json}\n\n`,结束为 `data: [DONE]`;取 `choices[0].delta.content`。DeepSeek 若返回 `reasoning_content`,**只在练习模式追加**,写代码模式丢弃(思维链不该被当成代码插入)。
+- 非流式回退(`cfg.stream == false`):取 `choices[0].message.content`。
+- 兼容性兜底:HTTP 4xx 时 body 往往是普通 JSON 错误对象而非 SSE;按首字节是 `{` 或 content-type 判定,走错误路径解析 `error.message`。
+- 解析不出来时,把 body 前 200 字节(**去掉 key**)追加到 AI 面板,便于在没有调试器的情况下诊断协议不匹配。
+- 错误文案:401 → "API key 无效或已过期";402/429 → "余额不足或请求过于频繁";5xx → "服务端错误(HTTP xxx)";`OPERATION_TIMEDOUT` → "请求超时";`COULDNT_RESOLVE_HOST` → "无法解析域名,检查网络或 base_url";`SSL_CONNECT_ERROR` → "TLS 连接失败"。
+
+### 5.7 Prompt 设计
+
+- **写代码模式**(可被配置覆盖):system = "你是 C/C++ 竞赛代码补全引擎。只输出应插入在 `<CURSOR>` 处的代码;不要重复已有代码,不要解释,不要 markdown 代码围栏。" user = 光标前 N 行 + `<CURSOR>` + 光标后 N 行。
+  后处理(在 `ai.cpp`):剥掉 ``` 围栏;若模型重复了当前行已有文本则去掉该前缀;截断到 `cfg.ghost_max_lines`(默认 8);去掉尾部空行。
+- **练习模式**:system = "你是 ICPC 教练。**绝对不要输出可直接编译运行的完整代码或代码块**。只用中文给出:1) 可能的算法方向 2) 时间/空间复杂度估计 3) 当前代码的卡点或潜在 bug 方向 4) 下一步该想什么。不超过 300 字。" 并由代码**无条件追加**一句不可被配置覆盖的后缀:"再次强调:不要输出任何可直接编译运行的代码。"
+  这只是 prompt 层的礼貌;真正的保证是 §6 的结构性保证。
+- 上下文截断:`lineCount > cfg.ai_max_context_lines` 时,取光标前后各一半行,中间插 `/* ...省略... */` 标记。
+
+---
+
+## 6. 两种模式:练习模式绝不插入缓冲区的硬性保证
+
+不靠散落各处的 `if (mode == ...)`。保证由**三条结构性事实**构成:
+
+**(1) 缓冲区只有一个 AI 入口。**
+`TextBuffer` 的全部改动只经过 `insert`/`erase` 两个原语;而 AI 产生的文本能到达它们的路径**只有一条**:`Editor::acceptGhost()`。`ai.cpp`、`aihttp.cpp`、`ui.cpp` 都不持有可写的 `TextBuffer&`(`ui.cpp` 只见 `const TextBuffer&`)。该唯一咽喉点开头即拦截:
+
+```cpp
+bool Editor::acceptGhost() {
+  if (!ghost_.complete)                    return false;   // 生成中不接受
+  if (ghost_.text.empty())                 return false;
+  if (ghost_.sink != AiSink::GhostText)    return false;   // ★ 结构性拦截
+  if (ghost_.gen != expected_gen_)         return false;   // 过期建议不接受
+  TextBuffer::Edit guard(buf_, "accept-ai");
+  cursor_ = buf_.insert(ghost_.anchor, ghost_.text);
+  ghost_.clear();
+  return true;
+}
+```
+
+**(2) 练习模式的回复不可能变成 Ghost。**
+`AiSink` 在**请求创建时**就由唯一函数 `AiService::sinkFor(mode)` 定死并写进 `AiRequest`,随事件一路带回。`Editor::setGhost()` 只在 `App::onAiDone` 里那**一个** `switch (ev.sink)` 的 `GhostText` 分支被调用;`PanelOnly` 分支只会 `panels_[Ai].appendStreaming(...)`。`setGhost` 内部再加 `assert(g.sink == AiSink::GhostText)` + 运行期 early-return,所以即使将来有人写错逻辑,退化结果是"没有 ghost",**永远不是"代码被插入"**。
+
+**(3) 切模式即销毁在飞工作。**
+`setMode()` 先 `gen_.fetch_add(1)`,于是所有已在网络上的回复在被"检视"之前就已被 generation 检查丢弃;Code→Practice 还会调 `Editor::clearGhost()`。因此**不存在**"切到练习模式之后,写代码模式的回复才落地"的时间窗。
+
+**附带效果:Tab 路径根本不需要判模式。** keymap 把 Tab 映射到 `Action::Tab`,处理函数是 `if (ed_.ghost().complete) ed_.acceptGhost(); else ed_.indent();`。练习模式永远不会有 ghost,所以 Tab 自动就只是缩进——满足"此模式下 Tab 不接受任何 AI 内容",且这条路径上一行模式判断都没有。模式问题在请求创建时被回答一次,编码进数据(`AiSink`),下游没有任何可以搞错的余地。
+
+---
+
+## 7. 配置
+
+**路径解析优先级**:
+1. 命令行 `--config <PATH>`
+2. 环境变量 `CPPIDE_CONFIG`
+3. `$XDG_CONFIG_HOME/cppide/config.json`

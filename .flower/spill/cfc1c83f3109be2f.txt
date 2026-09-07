@@ -1,0 +1,62 @@
+528	```cpp
+529	struct Config {
+530	  // ---- AI ----
+531	  std::string api_key;                       // 空 => AI 关闭
+532	  std::string base_url  = "https://api.deepseek.com";
+533	  std::string chat_path = "/v1/chat/completions";
+534	  std::string model     = "deepseek-chat";   // 默认值仅作占位,README 要求用户按官方文档填
+535	  bool   stream                 = true;
+536	  int    ghost_delay_ms         = 500;
+537	  int    ghost_min_interval_ms  = 1200;
+538	  int    ghost_max_lines        = 8;
+539	  int    ai_connect_timeout_ms  = 5000;
+540	  int    ai_timeout_ms          = 20000;
+541	  int    ai_max_context_lines   = 400;
+542	  int    max_tokens_code        = 256;
+543	  int    max_tokens_practice    = 512;
+544	  double temperature_code       = 0.2;
+545	  double temperature_practice   = 0.7;
+546	  std::string prompt_code;                   // 空 => 用内置默认
+547	  std::string prompt_practice;               // 空 => 用内置默认
+548	  // ---- 编译 ----
+549	  std::string cc  = "cc";
+550	  std::string cxx = "c++";
+551	  std::vector<std::string> cflags   = {"-O2","-std=c11","-Wall"};
+552	  std::vector<std::string> cxxflags = {"-O2","-std=c++17","-Wall"};
+553	  int compile_timeout_ms = 30000;
+554	  // ---- 运行 ----
+555	  int    run_timeout_ms   = 5000;
+556	  size_t run_output_limit = 1u << 20;
+557	  std::string stdin_file;                    // 空 => 用【输入】面板内容
+558	  // ---- 编辑器 ----
+559	  int  tab_width = 4;
+560	  bool expand_tab = true;
+561	  bool auto_indent = true;
+562	  bool show_line_numbers = true;
+563	  int  panel_height = 10;
+564	  int  tick_ms = 60;
+565	  // ---- 元信息 ----
+566	  std::string source_path;                   // 实际加载自哪(""=全默认)
+567	  std::vector<std::string> warnings;         // 非致命解析告警,启动时进状态栏与 AI 面板
+568	  bool aiEnabled() const { return !api_key.empty(); }
+569	  std::string chatUrl() const;               // base_url + chat_path,处理重复斜杠
+570	};
+571	
+572	class ConfigLoader {
+573	public:
+574	  static std::string defaultPath();
+575	  static Config load(const std::string& path, std::string& err);  // 永不硬失败
+576	  static std::string sampleJson();           // --print-config 与 README 共用
+577	};
+578	```
+579	
+580	**降级行为(需求明确要求不崩)**:
+581	- 配置文件不存在:用全默认,`warnings` 加一条"未找到配置文件 <path>,AI 功能已关闭",编辑/编译/运行完全可用。
+582	- JSON 语法错误:用全默认 + `warnings` 记录行号,**不中断启动**。
+583	- `api_key` 为空:`aiEnabled() == false` → **worker 线程根本不创建**;`Ctrl-A` / 停顿触发都立即变成一条面板消息"AI 未配置:请在 <path> 填写 api_key",状态栏 AI 状态显示"未配置"。
+584	- 单个字段类型不对(例如 `tab_width: "four"`):该字段用默认值 + 一条 warning,其余字段照常生效。
+585	- 代码中**不出现任何硬编码 key**;`model` 的默认值只是占位,README 明确要求用户填官方文档上的模型名。
+586	
+587	---
+588	
+589	## 8. UI 布局与快捷键

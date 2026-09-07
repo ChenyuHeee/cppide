@@ -1,0 +1,80 @@
+255	  full.clear();
+256	  bool cxx_ok = findInPath(cfg.cxx, full);
+257	  if (!cc_ok || !cxx_ok) {
+258	    r += "- 编译器未找到:请安装 Xcode Command Line Tools(xcode-select --install),"
+259	         "或在配置里把 cc/cxx 改成实际路径。\n";
+260	  } else {
+261	    r += "- 编译与运行功能就绪。\n";
+262	  }
+263	  r += cfg.aiEnabled() ? "- AI 功能已启用。\n"
+264	                       : "- AI 功能未启用(api_key 为空);编辑、编译、运行均不受影响。\n";
+265	  return r;
+266	}
+267	
+268	// -------------------------------------------------------- 打开文件的前置检查
+269	// 不存在 / 是目录 / 读不了 都要给中文报错并以非 0 退出,绝不带着坏状态进 TUI。
+270	bool checkOpenPath(const std::string& p, std::string& err) {
+271	  if (util::isDirectory(p)) {
+272	    err = p + " 是一个目录,不是文件。";
+273	    return false;
+274	  }
+275	  if (!util::fileExists(p)) {
+276	    err = "找不到文件 " + p + "。\n"
+277	          "       提示:不带参数启动 cppide 会开一个空缓冲区,编辑后用 Ctrl-O 另存为。";
+278	    return false;
+279	  }
+280	  std::string text, rerr;
+281	  if (!util::readFile(p, text, rerr)) {
+282	    err = "无法读取 " + p + ":" + rerr;
+283	    return false;
+284	  }
+285	  return true;
+286	}
+287	
+288	}  // namespace
+289	
+290	int main(int argc, char** argv) {
+291	  // 1) locale 必须最先:util 的显示宽度与 ncurses 的宽字符输出都依赖它。
+292	  std::setlocale(LC_ALL, "");
+293	  // 2) SIGPIPE:libcurl 与 runProcess 写已关闭的管道时不能把进程打死。
+294	  std::signal(SIGPIPE, SIG_IGN);
+295	  // 3) endwin 安全网。
+296	  installSafetyNet();
+297	
+298	  // 4) argv。
+299	  Args args;
+300	  std::string perr;
+301	  if (!parseArgs(argc, argv, args, perr)) {
+302	    std::fprintf(stderr, "cppide: %s\n", perr.c_str());
+303	    return 2;
+304	  }
+305	  if (args.help) {
+306	    printHelp();
+307	    return 0;
+308	  }
+309	  if (args.version) {
+310	    std::printf("cppide %s\n", kVersion);
+311	    return 0;
+312	  }
+313	
+314	  // 5) 配置:load() 永不硬失败,问题全在 err/warnings 里。
+315	  std::string cfg_err;
+316	  Config cfg = ConfigLoader::load(args.config_path, cfg_err);
+317	  // --config 显式给出的路径同步进 CPPIDE_CONFIG:这样运行期任何再次调用
+318	  // ConfigLoader::defaultPath() 的地方(如 app.cpp 的"请在 <path> 填写 api_key"
+319	  // 提示)指的都是用户真正要求的那个文件,而不是默认路径。
+320	  if (!args.config_path.empty()) ::setenv("CPPIDE_CONFIG", args.config_path.c_str(), 1);
+321	
+322	  // 非交互命令:纯 stdout,不初始化 ncurses,直接退出。
+323	  if (args.print_config) {
+324	    // 输出必须是一份可直接重定向使用的合法 JSON(api_key 为空字符串)。
+325	    std::fputs(ConfigLoader::sampleJson().c_str(), stdout);
+326	    return 0;
+327	  }
+328	  if (args.doctor) {
+329	    std::fputs(doctorReport(args, cfg, cfg_err).c_str(), stdout);
+330	    return 0;
+331	  }
+332	
+333	  // 6) 打开文件的前置检查。
+334	  if (!args.file.empty()) {

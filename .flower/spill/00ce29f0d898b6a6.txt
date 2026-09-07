@@ -1,0 +1,73 @@
+/work/src/app.cpp:189:  ai_.maybeAutoTrigger(ed_.buffer(), ed_.cursor());
+/work/src/app.cpp:272:    case Action::MoveLeft: ed_.moveLeft(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:273:    case Action::MoveRight: ed_.moveRight(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:274:    case Action::MoveUp: ed_.moveUp(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:275:    case Action::MoveDown: ed_.moveDown(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:276:    case Action::MoveWordLeft: ed_.moveWordLeft(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:277:    case Action::MoveWordRight: ed_.moveWordRight(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:278:    case Action::MoveHome: ed_.moveHome(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:279:    case Action::MoveEnd: ed_.moveEnd(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:280:    case Action::PageUp: ed_.movePageUp(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:281:    case Action::PageDown: ed_.movePageDown(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:282:    case Action::BufferStart: ed_.moveBufferStart(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:283:    case Action::BufferEnd: ed_.moveBufferEnd(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:286:    case Action::Enter: ed_.insertNewline(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:287:    case Action::Backspace: ed_.backspace(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:288:    case Action::Delete: ed_.del(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:290:    case Action::ShiftTab: ed_.unindent(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:294:      ai_.noteActivity();
+/work/src/app.cpp:299:      ai_.noteActivity();
+/work/src/app.cpp:302:    case Action::CutLine: ed_.cutLine(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:304:    case Action::PasteLine: ed_.pasteLines(); ai_.noteActivity(); markDirty(); return;
+/work/src/app.cpp:344:    ai_.noteActivity();
+/work/src/app.cpp:887:  ai_.askNow(ed_.buffer(), ed_.cursor(), "");
+/work/src/app.cpp:901:  ai_.noteActivity();
+/work/src/app.cpp:1114:      ai_.askNow(ed_.buffer(), ed_.cursor(), input);
+/work/tests/test_ai.cpp:459:  CHECK(const_ref >= 3);   // buildContext / buildRequest / maybeAutoTrigger / askNow
+/work/tests/test_ai.cpp:500:    // askNow:不崩,且给出"未配置"提示
+/work/tests/test_ai.cpp:501:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:510:    svc.noteActivity();
+/work/tests/test_ai.cpp:512:    for (int i = 0; i < 50; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+/work/tests/test_ai.cpp:519:    svc.noteActivity();
+/work/tests/test_ai.cpp:525:    svc.maybeAutoTrigger(empty, Pos{0, 0});
+/work/tests/test_ai.cpp:548:  caseBegin("取消:noteActivity / setMode / cancelInFlight 都让在飞回复不落地");
+/work/tests/test_ai.cpp:555:  // (a) noteActivity 之后,任何事件的 gen 都不等于当前 generation()
+/work/tests/test_ai.cpp:561:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:564:    svc.noteActivity();                   // 立刻作废
+/work/tests/test_ai.cpp:586:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:608:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:628:    svc.askNow(b, Pos{3, 5}, "");     // 第一个进 worker
+/work/tests/test_ai.cpp:629:    svc.askNow(b, Pos{3, 5}, "");     // 第二个排队;同时作废了第一个
+/work/tests/test_ai.cpp:630:    svc.noteActivity();               // 把排队中的那个也作废
+/work/tests/test_ai.cpp:664:  svc.askNow(b, Pos{1000, 3}, "");
+/work/tests/test_ai.cpp:684:  measure("noteActivity", [&] { svc.noteActivity(); });
+/work/tests/test_ai.cpp:685:  measure("maybeAutoTrigger", [&] { svc.maybeAutoTrigger(b, Pos{1000, 3}); });
+/work/tests/test_ai.cpp:686:  measure("askNow", [&] { svc.askNow(b, Pos{1000, 3}, "怎么优化"); });
+/work/tests/test_ai.cpp:718:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:746:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:768:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:787:    svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:807:    svc.askNow(b, Pos{3, 5}, "这题怎么想");
+/work/tests/test_ai.cpp:830:  svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:869:    svc->askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:887:      svc.askNow(b, Pos{3, 5}, "");   // 一半的轮次带着在飞请求析构
+/work/tests/test_ai.cpp:899:    for (int i = 0; i < 20; ++i) svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:922:  svc.noteActivity();
+/work/tests/test_ai.cpp:924:  for (int i = 0; i < 20; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+/work/tests/test_ai.cpp:931:    svc.noteActivity();
+/work/tests/test_ai.cpp:932:    svc.maybeAutoTrigger(b, Pos{3, 5});
+/work/tests/test_ai.cpp:941:  for (int i = 0; i < 20; ++i) svc.maybeAutoTrigger(blank, Pos{0, 0});
+/work/tests/test_ai.cpp:946:  svc.noteActivity();
+/work/tests/test_ai.cpp:948:  for (int i = 0; i < 200; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+/work/tests/test_ai.cpp:959:  for (int i = 0; i < 50; ++i) svc.maybeAutoTrigger(b, Pos{3, 5});
+/work/tests/test_ai.cpp:963:  // (f) 手动 askNow 无视 min_interval
+/work/tests/test_ai.cpp:964:  svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:967:  CHECK_M(srv.hits.load() == 2, "askNow 被 min_interval 挡住了");
+/work/tests/test_ai.cpp:1142:  svc.askNow(b, Pos{3, 5}, "这题怎么想");
+/work/tests/test_ai.cpp:1184:  svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:1225:  svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:1262:  svc.askNow(b, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:1286:    svc2.askNow(b2, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:1287:    svc2.maybeAutoTrigger(b2, Pos{3, 5});
+/work/tests/test_ai.cpp:1295:    svc3.askNow(b3, Pos{3, 5}, "");
+/work/tests/test_ai.cpp:1308:    svc4.noteActivity();

@@ -1,0 +1,130 @@
+// keys.cpp —— 归一化键码 / 动作枚举 / 全局绑定表的实现(照 architecture.md §8.2、§8.3)
+//
+// ★ 三条不可动摇的约定,改这个文件前先读完:
+//
+// 1) 本文件**绝不 include <curses.h>**(纪律见 keys.h 头注释:curses 只允许出现在
+//    ui.cpp,且必须先 `#define NCURSES_NOMACROS 1`)。但绑定表里要用到 KEY_LEFT /
+//    KEY_F(5) 之类的数值,所以下面把它们**照 ncurses 的稳定 ABI 硬编码**一份。
+//    这不是拍脑袋:tests/test_keys.cpp 会真的 include curses.h,对每一个常量做
+//    static_assert 逐个比对 —— 一旦哪天数值变了,测试当场红,而不是运行期怪键位。
+//
+// 2) Alt 的合成不在本文件。keys.h 没有给出合成函数的签名,而合成必须做一次
+//    **非阻塞读**(Terminal.app 把 Option 当 Esc 前缀发),那是 ui.cpp 的活。
+//    本文件只提供纯粹的 `Alt()/isAlt()/altBase()`(在 keys.h 里已是 constexpr)
+//    与查表。ui.cpp 必须实现的规则(逐字抄自 §8.2,也记在
+//    .flower/notes/跨模块约定.md):
+//        收到 27 -> nodelay 下再 wget_wch 一次:
+//          有键 k  -> 返回 Alt(归一化(k))   // k 可能是 KEY_LEFT,故要先归一化再打 Alt 位
+//          ERR     -> 返回 27(裸 Esc)
+//
+// 3) 刻意不绑定的键(§8.2):Ctrl-C(SIGINT)、Ctrl-Z(SIGTSTP)、Ctrl-S/Ctrl-Q
+//    (XON/XOFF 冻屏)、Ctrl-\(SIGQUIT+core)、Ctrl-Y(macOS VDSUSP)、
+//    Ctrl-J(10)、Ctrl-H(8)。tests/test_keys.cpp 断言它们查不到动作。
+//    注意 Ctrl-M(13)/Ctrl-I(9) 这两个键码**必须**有动作 —— 它们就是 Enter/Tab
+//    本身,不绑它们等于 Enter/Tab 不能用;"不绑 Ctrl-M/Ctrl-I" 的真实含义是
+//    "不把它们当作独立的 Ctrl 快捷键、键名也永远显示 Enter/Tab"。测试对这两个
+//    键码断言的是 "动作 == Enter/Tab 且 keyName 不含 'Ctrl-'"。
+#include "keys.h"
+
+#include <cstddef>
+
+#include "util.h"
+
+namespace {
+
+// ---------------------------------------------------------------- ncurses 键码镜像
+// 值来自 ncurses <curses.h>(自 BSD curses 起就未变过);test_keys.cpp 逐个 static_assert。
+constexpr int kNcDown  = 258;   // KEY_DOWN   0402
+constexpr int kNcUp    = 259;   // KEY_UP     0403
+constexpr int kNcLeft  = 260;   // KEY_LEFT   0404
+constexpr int kNcRight = 261;   // KEY_RIGHT  0405
+constexpr int kNcHome  = 262;   // KEY_HOME   0406
+constexpr int kNcBksp  = 263;   // KEY_BACKSPACE 0407
+constexpr int kNcF0    = 264;   // KEY_F0     0410
+constexpr int kNcDC    = 330;   // KEY_DC     0512(Delete)
+constexpr int kNcIC    = 331;   // KEY_IC     0513(Insert)
+constexpr int kNcNPage = 338;   // KEY_NPAGE  0522(PgDn)
+constexpr int kNcPPage = 339;   // KEY_PPAGE  0523(PgUp)
+constexpr int kNcEnter = 343;   // KEY_ENTER  0527(小键盘 Enter)
+constexpr int kNcBTab  = 353;   // KEY_BTAB   0541(Shift-Tab)
+constexpr int kNcEnd   = 360;   // KEY_END    0550
+constexpr int kNcSEnd  = 386;   // KEY_SEND   0602(Shift-End)
+constexpr int kNcSHome = 391;   // KEY_SHOME  0607(Shift-Home)
+constexpr int kNcResize = 410;  // KEY_RESIZE 0632(ui.cpp 归一化成 kKeyResize)
+
+constexpr int NcF(int n) { return kNcF0 + n; }   // KEY_F(n)
+
+// ---------------------------------------------------------------- 绑定表
+// 排列顺序 = 帮助浮层的展示顺序。同一动作可以有多条(Ctrl 主绑定 + F 键别名),
+// 第一条被视为"主绑定"(keyLabel 用它)。
+constexpr Binding kBindings[] = {
+    // ---- 移动(§8.2 第 1~3 行)----
+    {kNcLeft,                Action::MoveLeft,      "\xe2\x86\x90"},        // ←
+    {kNcRight,               Action::MoveRight,     "\xe2\x86\x92"},        // →
+    {kNcUp,                  Action::MoveUp,        "\xe2\x86\x91"},        // ↑
+    {kNcDown,                Action::MoveDown,      "\xe2\x86\x93"},        // ↓
+    {Alt(kNcLeft),           Action::MoveWordLeft,  "Alt-\xe2\x86\x90"},    // Alt-←
+    {Alt(kNcRight),          Action::MoveWordRight, "Alt-\xe2\x86\x92"},    // Alt-→
+    {kNcHome,                Action::MoveHome,      "Home"},
+    {kNcEnd,                 Action::MoveEnd,       "End"},
+    {kNcPPage,               Action::PageUp,        "PgUp"},
+    {kNcNPage,               Action::PageDown,      "PgDn"},
+    // BufferStart/BufferEnd:§8.2 的表没给键。Ctrl-Home/Ctrl-End 在各终端上的
+    // 转义序列五花八门且 ncurses 多半认不出,所以主绑定用最稳的单字符 Esc 前缀
+    // (Alt-< / Alt->,emacs 习惯),再挂 Alt-Home/Alt-End 与 Shift-Home/End 做别名。
+    {Alt(Char('<')),         Action::BufferStart,   "Alt-<"},
+    {Alt(Char('>')),         Action::BufferEnd,     "Alt->"},
+    {Alt(kNcHome),           Action::BufferStart,   "Alt-Home"},
+    {Alt(kNcEnd),            Action::BufferEnd,     "Alt-End"},
+    {kNcSHome,               Action::BufferStart,   "Shift-Home"},
+    {kNcSEnd,                Action::BufferEnd,     "Shift-End"},
+
+    // ---- 编辑(§8.2 第 4~6 行)----
+    {13,                     Action::Enter,         "Enter"},
+    {kNcEnter,               Action::Enter,         "Enter"},
+    {127,                    Action::Backspace,     "Backspace"},
+    {kNcBksp,                Action::Backspace,     "Backspace"},
+    {kNcDC,                  Action::Delete,        "Delete"},
+    {9,                      Action::Tab,           "Tab"},
+    {kNcBTab,                Action::ShiftTab,      "Shift-Tab"},
+    {Ctrl('U'),              Action::Undo,          "Ctrl-U"},
+    {Ctrl('W'),              Action::Redo,          "Ctrl-W"},
+    {Ctrl('K'),              Action::CutLine,       "Ctrl-K"},
+    {Ctrl('V'),              Action::PasteLine,     "Ctrl-V"},
+    {Ctrl('D'),              Action::CopyLine,      "Ctrl-D"},
+
+    // ---- 全局 ----
+    {27,                     Action::Escape,        "Esc"},
+    {Ctrl('O'),              Action::Save,          "Ctrl-O"},
+    {NcF(2),                 Action::Save,          "F2"},
+    {Ctrl('X'),              Action::Quit,          "Ctrl-X"},
+    {NcF(10),                Action::Quit,          "F10"},
+    {Ctrl('B'),              Action::Compile,       "Ctrl-B"},
+    {NcF(5),                 Action::Compile,       "F5"},
+    {Ctrl('R'),              Action::Run,           "Ctrl-R"},
+    {NcF(6),                 Action::Run,           "F6"},
+    {Ctrl('E'),              Action::CompileAndRun, "Ctrl-E"},
+    {NcF(7),                 Action::CompileAndRun, "F7"},
+    {Ctrl('T'),              Action::ToggleAiMode,  "Ctrl-T"},
+    {NcF(8),                 Action::ToggleAiMode,  "F8"},
+    {Ctrl('A'),              Action::AskAi,         "Ctrl-A"},
+    {NcF(4),                 Action::AskAi,         "F4"},   // §8.2:tmux 用户的别名
+    {Ctrl('G'),              Action::GotoLine,      "Ctrl-G"},
+    {Ctrl('F'),              Action::Find,          "Ctrl-F"},
+    {NcF(3),                 Action::FindNext,      "F3"},
+    {Ctrl('N'),              Action::NextDiag,      "Ctrl-N"},
+    {Ctrl('P'),              Action::PrevDiag,      "Ctrl-P"},
+    {Ctrl('L'),              Action::Redraw,        "Ctrl-L"},
+    {NcF(1),                 Action::Help,          "F1"},
+
+    // ---- 面板(§8.2 末 3 行 + §8.3)----
+    {Alt(Char('1')),         Action::FocusCompile,  "Alt-1"},
+    {Alt(Char('2')),         Action::FocusRun,      "Alt-2"},
+    {Alt(Char('3')),         Action::FocusAi,       "Alt-3"},
+    {Alt(Char('4')),         Action::FocusInput,    "Alt-4"},
+    {Alt(Char('0')),         Action::TogglePanel,   "Alt-0"},
+    {Alt(Char('=')),         Action::PanelTaller,   "Alt-="},
+    {Alt(Char('-')),         Action::PanelShorter,  "Alt--"},
+    // NextTab:§8.3 说"面板聚焦时 Tab 切下一个标签"。Tab 的键码(9)已经绑给
+    // Action::Tab,所以那条转换由 app.cpp 在"面板有焦点"时做;这里额外给 F9
+    // 一个直达绑定,使 Action 枚举里每个动作都至少有一个键(test_keys 会断言)。

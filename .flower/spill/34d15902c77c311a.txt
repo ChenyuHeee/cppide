@@ -1,0 +1,146 @@
+// ai.h —— AI 子系统:模式、请求、事件、服务线程
+//
+// 本文件同时定义了全工程的**事件类型**(EvKind / AppEvent):它们必须和 AiSink
+// 放在一起,因为每个事件都要带回“这条回复允许变成什么”(见 §6)。
+// CompileOutcome / ProcResult 只用 shared_ptr 持有,故这里前置声明即可,
+// 从而保持依赖图无环(proc.h/build.h 都不需要 include 本文件的完整定义)。
+//
+// 线程模型:
+//   * 唯一一个 worker 线程,**仅在 cfg.aiEnabled() 时创建**,阻塞在 in_.waitPop(200ms);
+//   * UI 线程与 worker 之间只有两个 Mailbox:请求进(in_)、事件出(out_);
+//   * UI 线程只用 tryPop,永不阻塞。
+//
+// 取消(双重过滤,互相独立):
+//   1) 任何改动/光标移动 -> noteActivity() -> gen_++;worker 把 gen 比对做成
+//      curl 的取消回调,在飞的传输立刻中止;
+//   2) 每个 AppEvent 都带 gen,UI 线程 drainEvents() 丢弃 gen != generation() 的事件。
+//   结论:在飞的回复既到不了网络层之外,即使到了也画不出来。
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <thread>
+
+#include "config.h"
+#include "mailbox.h"
+#include "textbuf.h"
+
+struct CompileOutcome;   // build.h
+struct ProcResult;       // proc.h
+
+enum class AiMode { Practice, Code };        // 练习模式 / 写代码模式
+enum class AiSink { PanelOnly, GhostText };  // 回复“允许变成什么”
+
+const char* aiModeZh(AiMode m);              // "练习模式" / "写代码模式"
+
+// AI 服务对外可见状态(状态栏用)。
+enum class AiState { Disabled, Idle, Thinking, Error };
+
+enum class EvKind {
+  AiStarted, AiDelta, AiDone, AiError,
+  CompileStarted, CompileDone, RunStarted, RunDone,
+  Status,
+};
+
+// 工作线程 -> UI 线程的唯一载体。重载荷用 shared_ptr,保证事件可廉价 move。
+struct AppEvent {
+  EvKind   kind = EvKind::Status;
+  uint64_t gen = 0;                          // AI generation 或 Runner::JobId
+  AiSink   sink = AiSink::PanelOnly;          // 随请求一路带回,§6 的关键
+  std::string text;
+  std::shared_ptr<CompileOutcome> compile;    // 目前由 App 组装(Runner 不填)
+  std::shared_ptr<ProcResult>     run;
+};
+
+struct AiRequest {
+  uint64_t gen = 0;
+  AiMode   mode = AiMode::Practice;
+  AiSink   sink = AiSink::PanelOnly;
+  std::string system_prompt, user_prompt;
+  // 补全后处理要用的“光标所在行的前缀”:模型常把已有文本重复一遍,
+  // 后处理据此去掉重复前缀。
+  std::string line_prefix;
+  double temperature = 0.2;
+  int    max_tokens = 256;
+  bool   stream = true;
+};
+
+// 内置 prompt(可被 cfg.prompt_code / cfg.prompt_practice 覆盖 system 部分)。
+namespace aiprompt {
+const char* defaultCodeSystem();
+const char* defaultPracticeSystem();
+// 练习模式**无条件追加**的后缀,不可被配置覆盖。
+// 这只是 prompt 层的礼貌;真正的保证是 §6 的结构性拦截。
+const char* practiceHardSuffix();
+// 光标标记,插在 user_prompt 里。
+const char* cursorMark();
+}  // namespace aiprompt
+
+class AiService {
+ public:
+  AiService(const Config& cfg, Mailbox<AppEvent>* out);
+  ~AiService();                               // 取消 + close + join(绝不 detach)
+  AiService(const AiService&) = delete;
+  AiService& operator=(const AiService&) = delete;
+
+  bool   enabled() const;                     // == cfg.aiEnabled()
+  AiMode mode() const;
+  void   setMode(AiMode m);                   // 先 gen_++(销毁在飞工作),见 §6(3)
+  AiMode toggleMode();
+
+  // 任意改动/移动光标时调用:记时间 + gen_++(于是在飞请求作废)。
+  void noteActivity();
+  // 每 tick 调用一次。自动触发条件全部满足才发:
+  //   mode==Code && enabled() && !inFlight()
+  //   && now-last_activity >= cfg.ghost_delay_ms
+  //   && now-last_auto_request >= cfg.ghost_min_interval_ms
+  //   && buffer.hasNonBlank()
+  void maybeAutoTrigger(const TextBuffer& b, Pos cur);
+  // 手动请求(Ctrl-A)。无视 ghost_min_interval_ms,但同样先取消在飞请求。
+  // question 为空 = 代码补全;非空 = 练习模式的提问。
+  void askNow(const TextBuffer& b, Pos cur, const std::string& question);
+  void cancelInFlight();
+
+  uint64_t generation() const;
+  bool inFlight() const;
+  AiState state() const;
+  const char* stateZh() const;                // "就绪"/"思考中…"/"未配置"/"错误"
+
+ private:
+  // ★ 全工程唯一的 sink 决策点。练习模式的回复在**请求创建时**就被定死为
+  //   PanelOnly,并随事件一路带回;Editor::setGhost/acceptGhost 会拒掉非
+  //   GhostText 的一切。所以下游没有任何可以搞错的余地。
+  static AiSink sinkFor(AiMode m) {
+    return m == AiMode::Code ? AiSink::GhostText : AiSink::PanelOnly;
+  }
+  AiRequest buildRequest(const TextBuffer& b, Pos cur, const std::string& q,
+                         AiMode m) const;
+  // 取光标前后各 max_lines/2 行;超长时中间插 "/* ...省略... */"。
+  // prefix 末尾即光标处(不含 cursorMark)。
+  static void buildContext(const TextBuffer& b, Pos cur, int max_lines,
+                           std::string& prefix, std::string& suffix);
+  void workerLoop();
+  void submit(AiRequest req);
+
+ public:
+  // 补全后处理(public 便于单测):剥掉 ``` 围栏、去掉与 line_prefix 重复的前缀、
+  // 截断到 max_lines 行、去掉尾部空行。
+  static std::string postprocessCompletion(const std::string& raw,
+                                           const std::string& line_prefix,
+                                           int max_lines);
+
+ private:
+  Config cfg_;                                // 拷贝一份:worker 线程独立读取,不依赖 App 生命周期
+  std::atomic<uint64_t> gen_{0};
+  std::atomic<bool> in_flight_{false};
+  std::atomic<int64_t> last_activity_ms_{0};
+  std::atomic<int64_t> last_auto_request_ms_{0};
+  std::atomic<int> mode_{static_cast<int>(AiMode::Practice)};
+  std::atomic<int> state_{static_cast<int>(AiState::Disabled)};
+  std::atomic<bool> stop_{false};
+  Mailbox<AiRequest> in_;
+  Mailbox<AppEvent>* out_ = nullptr;
+  std::thread th_;
+};

@@ -1,0 +1,80 @@
+1	// ai.h —— AI 子系统:模式、请求、事件、服务线程
+2	//
+3	// 本文件同时定义了全工程的**事件类型**(EvKind / AppEvent):它们必须和 AiSink
+4	// 放在一起,因为每个事件都要带回“这条回复允许变成什么”(见 §6)。
+5	// CompileOutcome / ProcResult 只用 shared_ptr 持有,故这里前置声明即可,
+6	// 从而保持依赖图无环(proc.h/build.h 都不需要 include 本文件的完整定义)。
+7	//
+8	// 线程模型:
+9	//   * 唯一一个 worker 线程,**仅在 cfg.aiEnabled() 时创建**,阻塞在 in_.waitPop(200ms);
+10	//   * UI 线程与 worker 之间只有两个 Mailbox:请求进(in_)、事件出(out_);
+11	//   * UI 线程只用 tryPop,永不阻塞。
+12	//
+13	// 取消(双重过滤,互相独立):
+14	//   1) 任何改动/光标移动 -> noteActivity() -> gen_++;worker 把 gen 比对做成
+15	//      curl 的取消回调,在飞的传输立刻中止;
+16	//   2) 每个 AppEvent 都带 gen,UI 线程 drainEvents() 丢弃 gen != generation() 的事件。
+17	//   结论:在飞的回复既到不了网络层之外,即使到了也画不出来。
+18	#pragma once
+19	
+20	#include <atomic>
+21	#include <cstdint>
+22	#include <memory>
+23	#include <string>
+24	#include <thread>
+25	
+26	#include "config.h"
+27	#include "mailbox.h"
+28	#include "textbuf.h"
+29	
+30	struct CompileOutcome;   // build.h
+31	struct ProcResult;       // proc.h
+32	
+33	enum class AiMode { Practice, Code };        // 练习模式 / 写代码模式
+34	enum class AiSink { PanelOnly, GhostText };  // 回复“允许变成什么”
+35	
+36	const char* aiModeZh(AiMode m);              // "练习模式" / "写代码模式"
+37	
+38	// AI 服务对外可见状态(状态栏用)。
+39	enum class AiState { Disabled, Idle, Thinking, Error };
+40	
+41	enum class EvKind {
+42	  AiStarted, AiDelta, AiDone, AiError,
+43	  CompileStarted, CompileDone, RunStarted, RunDone,
+44	  Status,
+45	};
+46	
+47	// 工作线程 -> UI 线程的唯一载体。重载荷用 shared_ptr,保证事件可廉价 move。
+48	struct AppEvent {
+49	  EvKind   kind = EvKind::Status;
+50	  uint64_t gen = 0;                          // AI generation 或 Runner::JobId
+51	  AiSink   sink = AiSink::PanelOnly;          // 随请求一路带回,§6 的关键
+52	  std::string text;
+53	  std::shared_ptr<CompileOutcome> compile;    // 目前由 App 组装(Runner 不填)
+54	  std::shared_ptr<ProcResult>     run;
+55	};
+56	
+57	struct AiRequest {
+58	  uint64_t gen = 0;
+59	  AiMode   mode = AiMode::Practice;
+60	  AiSink   sink = AiSink::PanelOnly;
+61	  std::string system_prompt, user_prompt;
+62	  // 补全后处理要用的“光标所在行的前缀”:模型常把已有文本重复一遍,
+63	  // 后处理据此去掉重复前缀。
+64	  std::string line_prefix;
+65	  double temperature = 0.2;
+66	  int    max_tokens = 256;
+67	  bool   stream = true;
+68	};
+69	
+70	// 内置 prompt(可被 cfg.prompt_code / cfg.prompt_practice 覆盖 system 部分)。
+71	namespace aiprompt {
+72	const char* defaultCodeSystem();
+73	const char* defaultPracticeSystem();
+74	// 练习模式**无条件追加**的后缀,不可被配置覆盖。
+75	// 这只是 prompt 层的礼貌;真正的保证是 §6 的结构性拦截。
+76	const char* practiceHardSuffix();
+77	// 光标标记,插在 user_prompt 里。
+78	const char* cursorMark();
+79	}  // namespace aiprompt
+80	

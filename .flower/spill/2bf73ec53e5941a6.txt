@@ -1,0 +1,166 @@
+/work/src/:
+total 1492
+drwxr-xr-x 62 root root   1984 Sep  6 19:41 .
+drwxr-xr-x  9 root root    288 Sep  6 19:41 ..
+-rw-r--r--  1 root root  19883 Sep  6 18:26 ai.cpp
+-rw-r--r--  1 root root    178 Sep  6 18:49 ai.d
+-rw-r--r--  1 root root   6173 Sep  6 16:48 ai.h
+-rw-r--r--  1 root root  71584 Sep  6 18:49 ai.o
+-rw-r--r--  1 root root  27798 Sep  6 17:45 aihttp.cpp
+-rw-r--r--  1 root root    102 Sep  6 17:51 aihttp.d
+-rw-r--r--  1 root root   5412 Sep  6 16:47 aihttp.h
+-rw-r--r--  1 root root  58536 Sep  6 17:51 aihttp.o
+-rw-r--r--  1 root root  39877 Sep  6 18:47 app.cpp
+-rw-r--r--  1 root root    379 Sep  6 19:41 app.d
+-rw-r--r--  1 root root   6678 Sep  6 18:43 app.h
+-rw-r--r--  1 root root 142232 Sep  6 19:41 app.o
+-rw-r--r--  1 root root  14506 Sep  6 17:41 build.cpp
+-rw-r--r--  1 root root    186 Sep  6 17:51 build.d
+-rw-r--r--  1 root root   3519 Sep  6 16:46 build.h
+-rw-r--r--  1 root root  41272 Sep  6 17:51 build.o
+-rw-r--r--  1 root root  16975 Sep  6 17:04 config.cpp
+-rw-r--r--  1 root root    102 Sep  6 17:31 config.d
+-rw-r--r--  1 root root   3471 Sep  6 16:44 config.h
+-rw-r--r--  1 root root  94488 Sep  6 17:31 config.o
+-rw-r--r--  1 root root  25745 Sep  6 17:43 editor.cpp
+-rw-r--r--  1 root root    219 Sep  6 17:51 editor.d
+-rw-r--r--  1 root root   5405 Sep  6 16:48 editor.h
+-rw-r--r--  1 root root  39176 Sep  6 17:51 editor.o
+-rw-r--r--  1 root root  18647 Sep  6 17:11 highlight.cpp
+-rw-r--r--  1 root root     97 Sep  6 17:31 highlight.d
+-rw-r--r--  1 root root   3100 Sep  6 16:45 highlight.h
+-rw-r--r--  1 root root  44384 Sep  6 17:31 highlight.o
+-rw-r--r--  1 root root  22002 Sep  6 17:02 json.cpp
+-rw-r--r--  1 root root     48 Sep  6 17:31 json.d
+-rw-r--r--  1 root root   3681 Sep  6 16:43 json.h
+-rw-r--r--  1 root root  54600 Sep  6 17:31 json.o
+-rw-r--r--  1 root root  20349 Sep  6 17:44 keys.cpp
+-rw-r--r--  1 root root     71 Sep  6 17:51 keys.d
+-rw-r--r--  1 root root   3533 Sep  6 16:50 keys.h
+-rw-r--r--  1 root root  31024 Sep  6 17:51 keys.o
+-rw-r--r--  1 root root   3359 Sep  6 16:43 mailbox.h
+-rw-r--r--  1 root root  14628 Sep  6 19:38 main.cpp
+-rw-r--r--  1 root root    381 Sep  6 19:41 main.d
+-rw-r--r--  1 root root  49976 Sep  6 19:41 main.o
+-rw-r--r--  1 root root  22017 Sep  6 18:07 panel.cpp
+-rw-r--r--  1 root root    104 Sep  6 18:09 panel.d
+-rw-r--r--  1 root root   4677 Sep  6 18:06 panel.h
+-rw-r--r--  1 root root  38872 Sep  6 18:09 panel.o
+-rw-r--r--  1 root root  27285 Sep  6 17:22 proc.cpp
+-rw-r--r--  1 root root    155 Sep  6 17:31 proc.d
+-rw-r--r--  1 root root   5729 Sep  6 16:46 proc.h
+-rw-r--r--  1 root root  81096 Sep  6 17:31 proc.o
+-rw-r--r--  1 root root  23029 Sep  6 17:12 textbuf.cpp
+-rw-r--r--  1 root root     60 Sep  6 17:31 textbuf.d
+-rw-r--r--  1 root root   5663 Sep  6 16:45 textbuf.h
+-rw-r--r--  1 root root  62504 Sep  6 17:31 textbuf.o
+-rw-r--r--  1 root root  42147 Sep  6 18:59 ui.cpp
+-rw-r--r--  1 root root    377 Sep  6 19:10 ui.d
+-rw-r--r--  1 root root   5513 Sep  6 18:30 ui.h
+-rw-r--r--  1 root root  83016 Sep  6 19:10 ui.o
+-rw-r--r--  1 root root  29723 Sep  6 17:04 util.cpp
+-rw-r--r--  1 root root     48 Sep  6 17:31 util.d
+-rw-r--r--  1 root root   6236 Sep  6 16:42 util.h
+-rw-r--r--  1 root root  49032 Sep  6 17:31 util.o
+
+/work/tests/:
+total 488
+drwxr-xr-x 16 root root   512 Sep  6 18:57 .
+drwxr-xr-x  9 root root   288 Sep  6 19:41 ..
+-rw-r--r--  1 root root 52604 Sep  6 18:50 test_ai.cpp
+-rw-r--r--  1 root root 32291 Sep  6 17:45 test_aihttp.cpp
+-rw-r--r--  1 root root 32294 Sep  6 17:11 test_config.cpp
+-rw-r--r--  1 root root 51903 Sep  6 17:50 test_diag.cpp
+-rw-r--r--  1 root root 41706 Sep  6 17:44 test_editor.cpp
+-rw-r--r--  1 root root 30126 Sep  6 17:10 test_highlight.cpp
+-rw-r--r--  1 root root 28807 Sep  6 17:11 test_json.cpp
+-rw-r--r--  1 root root 21467 Sep  6 17:43 test_keys.cpp
+-rw-r--r--  1 root root 47775 Sep  6 18:08 test_panel.cpp
+-rw-r--r--  1 root root 29368 Sep  6 17:21 test_proc.cpp
+-rw-r--r--  1 root root 15348 Sep  6 17:41 test_sse.cpp
+-rw-r--r--  1 root root 32861 Sep  6 17:13 test_textbuf.cpp
+-rw-r--r--  1 root root 16739 Sep  6 18:57 test_ui.cpp
+-rw-r--r--  1 root root 34748 Sep  6 17:09 test_util.cpp
+# cppide —— C/C++ 终端 IDE(ncurses + libcurl,C++17)
+#
+# 依赖:ncurses(宽字符版)+ libcurl。
+#   macOS  : 系统自带(brew 的 ncurses 若存在则优先)
+#   Debian : apt-get install build-essential libncursesw5-dev libcurl4-openssl-dev
+#            (trixie 上包名为 libncurses-dev + libcurl4-gnutls-dev 亦可)
+#
+# 常用目标:
+#   make                 编译出 ./cppide
+#   make check-headers   Wave 1 验收门:每个头文件必须自给自足
+#   make tests           编译并运行 tests/test_*.cpp
+#   make debug           -O0 -g + ASan/UBSan 全量重建
+
+BIN      ?= cppide
+CXX      ?= c++
+CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -MMD -MP
+PREFIX   ?= /usr/local
+UNAME_S  := $(shell uname -s)
+
+# tests/*.cpp 直接写 #include "config.h"(不带 ../src/),所以搜索路径必须带 -Isrc。
+# 放在 CPPFLAGS 而不是 CXXFLAGS:check-headers 的 SYNFLAGS 会过滤 CXXFLAGS,
+# 而 CPPFLAGS 三个目标(%.o / check-headers / tests)都会用到。
+CPPFLAGS += -Isrc
+
+ifeq ($(UNAME_S),Darwin)
+  NCURSES_PREFIX := $(shell brew --prefix ncurses 2>/dev/null)
+  ifneq ($(NCURSES_PREFIX),)
+    CPPFLAGS += -I$(NCURSES_PREFIX)/include
+    LDFLAGS  += -L$(NCURSES_PREFIX)/lib
+  endif
+  LDLIBS += -lncurses -lcurl -lpthread
+  # 若 macOS 自带的 ncurses 头不肯给出宽字符原型(get_wch / add_wch / cchar_t 未声明),
+  # 打开下面这行;Debian 的 ncursesw 头默认已 NCURSES_WIDECHAR=1,不需要它。
+  # CPPFLAGS += -D_XOPEN_SOURCE_EXTENDED
+else
+  # Linux:宽字符符号(add_wch/get_wch)只在 ncursesw 里,必须链 -lncursesw
+  LDLIBS += -lncursesw -lcurl -lpthread
+endif
+
+SRC := $(wildcard src/*.cpp)
+OBJ := $(SRC:.cpp=.o)
+DEP := $(OBJ:.o=.d)
+HDR := $(wildcard src/*.h)
+
+# 语法检查时不要生成 .d(会与 .o 的依赖文件同名互相覆盖)
+SYNFLAGS := $(filter-out -MMD -MP,$(CXXFLAGS))
+
+all: $(BIN)
+
+$(BIN): $(OBJ)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+%.o: %.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $<
+
+# Wave 1 的验收门:每个头文件必须自给自足。
+# 用“生成一个只 include 该头的 TU”而不是直接 -x c++ 头文件本身:
+# 后者会让 GCC 无条件报 "#pragma once in main file"(该警告无法用 -Wno-* 关掉),
+# 而且“被 include”才是头文件真实的使用方式。
+check-headers:
+	@for h in $(HDR); do echo "  $$h"; \
+	  printf '#include "%s"\n' "$$h" | \
+	  $(CXX) $(CPPFLAGS) $(SYNFLAGS) -fsyntax-only -x c++ - || exit 1; done
+	@echo "check-headers: OK ($(words $(HDR)) 个头文件)"
+
+debug: CXXFLAGS += -O0 -g -fsanitize=address,undefined
+debug: LDFLAGS  += -fsanitize=address,undefined
+debug: clean all
+
+tests: $(filter-out src/main.o,$(OBJ))
+	@for t in tests/test_*.cpp; do \
+	  $(CXX) $(CPPFLAGS) $(CXXFLAGS) -o /tmp/$$(basename $$t .cpp) $$t \
+	    $(filter-out src/main.o,$(OBJ)) $(LDLIBS) && /tmp/$$(basename $$t .cpp) || exit 1; done
+
+install: $(BIN)
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+
+clean:
+	rm -f $(OBJ) $(DEP) $(BIN)
+
+-include $(DEP)
+.PHONY: all clean debug tests install check-headers

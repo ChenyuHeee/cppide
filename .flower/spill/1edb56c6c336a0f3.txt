@@ -1,0 +1,80 @@
+/work:
+total 648
+drwxr-xr-x 10  501 1000    320 Sep  6 23:54 .
+drwxr-xr-x  1 root root   4096 Sep  6 16:07 ..
+drwxr-xr-x  8 root root    256 Sep  6 17:05 .flower
+-rw-r--r--  1 root root   3081 Sep  6 17:31 Makefile
+-rw-r--r--  1 root root  42698 Sep  6 22:59 README.md
+-rw-r--r--  1 root root   2252 Sep  6 19:48 config.sample.json
+-rwxr-xr-x  1 root root 605536 Sep  6 23:54 cppide
+drwxr-xr-x  4 root root    128 Sep  7 00:17 runs
+drwxr-xr-x 62 root root   1984 Sep  6 23:54 src
+drwxr-xr-x 18 root root    576 Sep  6 22:57 tests
+
+/work/.flower/artifacts/:
+total 344
+drwxr-xr-x 23 root root   736 Sep  7 00:15 .
+drwxr-xr-x  8 root root   256 Sep  6 17:05 ..
+-rw-r--r--  1 root root 43601 Sep  6 16:37 architecture.md
+-rw-r--r--  1 root root 17008 Sep  6 16:18 env-probe.md
+-rw-r--r--  1 root root  5231 Sep  6 18:12 panel-header-fix.md
+-rw-r--r--  1 root root 12218 Sep  6 16:56 wave1-report.md
+-rw-r--r--  1 root root  6678 Sep  6 17:14 wave2-config.md
+-rw-r--r--  1 root root  8477 Sep  6 17:14 wave2-highlight.md
+-rw-r--r--  1 root root  6168 Sep  6 17:12 wave2-json.md
+-rw-r--r--  1 root root  8072 Sep  6 17:26 wave2-proc.md
+-rw-r--r--  1 root root  6632 Sep  6 17:15 wave2-textbuf.md
+-rw-r--r--  1 root root  7469 Sep  6 17:11 wave2-util.md
+-rw-r--r--  1 root root  7605 Sep  6 17:50 wave3-aihttp.md
+-rw-r--r--  1 root root 12612 Sep  6 17:57 wave3-build-keys.md
+-rw-r--r--  1 root root  9030 Sep  6 17:46 wave3-editor.md
+-rw-r--r--  1 root root 11213 Sep  6 18:02 wave3-panel.md
+-rw-r--r--  1 root root 10941 Sep  6 18:56 wave4-ai.md
+-rw-r--r--  1 root root 11799 Sep  6 19:40 wave4-app.md
+-rw-r--r--  1 root root 37272 Sep  6 19:22 wave4-ui.md
+-rw-r--r--  1 root root 15070 Sep  6 23:27 wave5-finalfix.md
+-rw-r--r--  1 root root 31569 Sep  6 22:30 wave5-polish.md
+-rw-r--r--  1 root root 10239 Sep  6 20:35 wave5-readme.md
+-rw-r--r--  1 root root 36171 Sep  7 00:15 验收审计.md
+
+/work/.flower/scripts/:
+total 352
+drwxr-xr-x  55 root root  1760 Sep  7 00:07 .
+drwxr-xr-x   8 root root   256 Sep  6 17:05 ..
+-rw-r--r--   1 root root  8165 Sep  7 00:01 audit-ai-modes.sh
+-rw-r--r--   1 root root  6011 Sep  6 23:53 audit-asan-smoke.sh
+-rw-------+  1 root root  6144 Sep  6 23:47 audit-build-run-mode.sh
+-rw-r--r--   1 root root  5337 Sep  6 23:47 audit-config-key.sh
+-rw-r--r--   1 root root  6481 Sep  6 23:32 audit-fake-ai-server.py
+-rw-r--r--   1 root root  2222 Sep  7 00:03 audit-idle-cost.sh
+-rw-r--r--   1 root root  5064 Sep  7 00:07 audit-net-failures.sh
+-rw-r--r--   1 root root  4432 Sep  6 23:42 audit-open-edit-save.sh
+-rw-r--r--   1 root root  8885 Sep  6 23:57 audit-readme-keys.sh
+-rwxr-xr-x   1 root root  5346 Sep  6 17:45 gen-diag-samples.py
+-rwxr-xr-x   1 root root 10329 Sep  6 16:18 probe-toolchain.sh
+-rw-r--r--   1 root root  1025 Sep  6 18:10 scan-header-storage.py
+-rwxr-xr-x   1 root root   890 Sep  6 17:10 verify-util.sh
+-rw-r--r--   1 root root  9594 Sep  6 16:53 wave1-verify.sh
+-rwxr-xr-x   1 root root  1613 Sep  6 17:13 wave2-config-verify.sh
+-rwxr-xr-x   1 root root  1623 Sep  6 17:12 wave2-highlight-verify.sh
+-rwxr-xr-x   1 root root  1276 Sep  6 17:11 wave2-json-verify.sh
+-rwxr-xr-x   1 root root  1898 Sep  6 17:16 wave2-proc-verify.sh
+-rw-r--r--   1 root root  2111 Sep  6 17:11 wave2-textbuf-verify.sh
+-rwxr-xr-x   1 root root  1996 Sep  6 17:41 wave3-aihttp-verify.sh
+-rwxr-xr-x   1 root root  2389 Sep  6 17:53 wave3-build-keys-verify.sh
+-rwxr-xr-x   1 root root  2026 Sep  6 17:42 wave3-editor-verify.sh
+-rwxr-xr-x   1 root root  3708 Sep  6 17:54 wave3-panel-verify.sh
+-rwxr-xr-x   1 root root  2750 Sep  6 18:42 wave4-ai-verify.sh
+-rwxr-xr-x   1 root root  5678 Sep  6 19:35 wave4-app-verify.sh
+-rw-r--r--   1 root root  9409 Sep  6 19:22 wave4-pty-drive.cpp
+-rw-r--r--   1 root root   709 Sep  6 19:35 wave4-pty-edit.txt
+-rw-r--r--   1 root root   621 Sep  6 19:30 wave4-pty-loop.txt
+-rw-r--r--   1 root root   633 Sep  6 19:30 wave4-pty-smoke.txt
+-rw-r--r--   1 root root   511 Sep  6 19:34 wave4-pty-stdin.txt
+-rwxr-xr-x   1 root root 22960 Sep  6 18:54 wave4-ui-verify.sh
+-rw-r--r--   1 root root  1129 Sep  6 21:57 wave5-a2-newfile.txt
+-rw-r--r--   1 root root  1382 Sep  6 21:16 wave5-a3-compile-esc.txt
+-rw-r--r--   1 root root  1754 Sep  6 21:21 wave5-a6-tab-cycle.txt
+-rw-r--r--   1 root root  1545 Sep  6 21:11 wave5-b1-resize.txt
+-rw-r--r--   1 root root  1235 Sep  6 21:13 wave5-b2-esc-kill.txt
+-rw-r--r--   1 root root   590 Sep  6 21:13 wave5-b2b-timeout.txt

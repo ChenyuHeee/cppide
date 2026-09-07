@@ -1,0 +1,340 @@
+{
+  "_comment": "cppide 配置文件。以 _ 开头的键是注释,加载时会被忽略。所有字段都可省略,省略即用内置默认值。",
+  "_comment_env": "环境变量优先级高于本文件:CPPIDE_API_KEY(或 DEEPSEEK_API_KEY)、CPPIDE_MODEL、CPPIDE_BASE_URL。配置文件路径可用 --config 或 CPPIDE_CONFIG 指定。",
+  "_comment_api_key": "把 DeepSeek 控制台申请到的 key 填在这里。留空则 AI 功能关闭,编辑/编译/运行照常可用。切勿把填好 key 的本文件提交到版本库。",
+  "api_key": "",
+  "_comment_model": "占位默认值仅供跑通流程,请按 DeepSeek 官方文档填写实际模型名。",
+  "model": "deepseek-chat",
+  "base_url": "https://api.deepseek.com",
+  "chat_path": "/v1/chat/completions",
+  "stream": true,
+  "_comment_ghost": "写代码模式的行内补全:停顿 ghost_delay_ms 毫秒后自动请求,两次请求至少间隔 ghost_min_interval_ms 毫秒(省钱),最多显示 ghost_max_lines 行。",
+  "ghost_delay_ms": 500,
+  "ghost_min_interval_ms": 1200,
+  "ghost_max_lines": 8,
+  "ai_connect_timeout_ms": 5000,
+  "ai_timeout_ms": 20000,
+  "ai_max_context_lines": 400,
+  "max_tokens_code": 256,
+  "max_tokens_practice": 512,
+  "temperature_code": 0.2,
+  "temperature_practice": 0.7,
+  "_comment_prompt": "留空则使用内置提示词。练习模式的“不要输出可运行代码”后缀由程序强制追加,无法被覆盖。",
+  "prompt_code": "",
+  "prompt_practice": "",
+  "_comment_build": "编译命令与参数。cflags 用于 .c,cxxflags 用于 .cc/.cpp/.cxx。写成 [] 表示不加任何参数。",
+  "cc": "cc",
+  "cxx": "c++",
+  "cflags": [
+    "-O2",
+    "-std=c11",
+    "-Wall"
+  ],
+  "cxxflags": [
+    "-O2",
+    "-std=c++17",
+    "-Wall"
+  ],
+  "compile_timeout_ms": 30000,
+  "_comment_run": "run_output_limit 是单次运行捕获的输出字节上限;stdin_file 留空则用【输入】面板里编辑的内容。",
+  "run_timeout_ms": 5000,
+  "run_output_limit": 1048576,
+  "stdin_file": "",
+  "_comment_editor": "tick_ms 是主循环的空转周期(毫秒),影响 ghost 触发与状态刷新的精度。",
+  "tab_width": 4,
+  "expand_tab": true,
+  "auto_indent": true,
+  "show_line_numbers": true,
+  "panel_height": 10,
+  "tick_ms": 60
+}
+===INDEX===
+# 工作台索引
+
+> 自动生成,勿手改。scripts 首行写 `# desc: 一句话` 会出现在这里。
+
+## 可复用脚本(44)
+- `.flower/scripts/gen-diag-samples.py` — 用真实 g++/gcc 的 stderr 生成 tests/test_diag.cpp 的样本数据块(替换 //@@SAMPLES@@ 标记) (5.2K)
+- `.flower/scripts/probe-toolchain.sh` — 探测/验证 ncurses+libcurl+c++17 工具链是否可用 (10.1K)
+- `.flower/scripts/scan-header-storage.py` — 扫描 src/*.h,报告"声明了 getter/setter 但 private 区找不到对应存储成员"的疑似缺口 (1.0K)
+- `.flower/scripts/verify-util.sh` — 验收 src/util.cpp —— 零 warning 编译 + tests/test_util.cpp 在 ASan/UBSan 下跑通 (890B)
+- `.flower/scripts/wave1-verify.sh` — Wave 1 自证:头文件自给自足 + 全头合并 TU + curses 宏共存 + Mailbox 并发测试 (9.4K)
+- `.flower/scripts/wave2-config-verify.sh` — 验证 src/config.cpp 零 warning 编译 + 在 ASan/UBSan 与 -O2/NDEBUG 下跑 tests/test_config.cpp (1.6K)
+- `.flower/scripts/wave2-highlight-verify.sh` — Wave2 语法高亮验收:highlight.cpp 零 warning 编译 + test_highlight 在 ASan/UBSan 与 -O2 下通过(含真 textbuf 链接) (1.6K)
+- `.flower/scripts/wave2-json-verify.sh` — 验证 src/json.cpp + tests/test_json.cpp:零 warning 编译 + 普通/ASan+UBSan 双跑 (1.2K)
+- `.flower/scripts/wave2-proc-verify.sh` — 验证 src/proc.cpp:零 warning 编译 + test_proc 在 -O2 与 ASan/UBSan 下反复跑(TSan 本机不可用) (1.9K)
+- `.flower/scripts/wave2-textbuf-verify.sh` — Wave 2 textbuf 自证:零 warning 编译 + ASan/UBSan 下跑 test_textbuf(全部产物落 /tmp) (2.1K)
+- `.flower/scripts/wave3-aihttp-verify.sh` — 验 aihttp/SSE —— 零 warning 编译 + ASan/UBSan/LSan 跑 test_sse 与 test_aihttp(ROUNDS 轮) (1.9K)
+- `.flower/scripts/wave3-build-keys-verify.sh` — 验证 Wave 3 的 build.cpp + keys.cpp:零 warning 编译 + test_diag/test_keys 在 -O2 与 ASan/UBSan 下反复跑 + make 两个门 (2.3K)
+- `.flower/scripts/wave3-editor-verify.sh` — Wave3 editor 验收:editor.cpp 零 warning + test_editor 在 ASan/UBSan(assert 开/关)与 -O2/NDEBUG 下通过 (2.0K)
+- `.flower/scripts/wave3-panel-verify.sh` — Wave 3 panel 自证:零 warning 编译 + ASan/UBSan/LSan 跑 test_panel + 变异测试(产物全落 /tmp) (3.6K)
+- `.flower/scripts/wave4-ai-verify.sh` — Wave 4 ai.cpp 验收:零 warning 编译 + check-headers + test_ai(ASan/UBSan/LSan,ROUNDS 轮) (2.7K)
+- `.flower/scripts/wave4-app-verify.sh` — Wave4 app/main 全量验收 —— 非交互命令 + pty 端到端冒烟(可选 ASan/UBSan) (5.5K)
+- `.flower/scripts/wave4-pty-drive.cpp` — forkpty 驱动器 —— 在伪终端里真跑 TUI 程序,按脚本喂按键并断言屏幕输出 (9.2K)
+- `.flower/scripts/wave4-pty-edit.txt` — 附加验收:提示行(Ctrl-G / Ctrl-F)、撤销、帮助浮层、面板折叠 —— 只要不崩且有可见反馈 (709B)
+- `.flower/scripts/wave4-pty-loop.txt` — 验收 6:运行死循环程序 —— 编辑器不挂死 + Esc 能终止 (621B)
+- `.flower/scripts/wave4-pty-smoke.txt` — 验收 5:端到端冒烟 (633B)
+- `.flower/scripts/wave4-pty-stdin.txt` — 附加验收:【输入】面板喂 stdin + Ctrl-E 编译并运行 + 看到 stdout 与退出码 (511B)
+- `.flower/scripts/wave4-ui-verify.sh` — Wave4 ui.cpp 验收:零 warning + check-headers + test_ui(O2/ASan) + pty 真渲染三档 + 终端状态恢复实测 (22.4K)
+- `.flower/scripts/wave5-a2-newfile.txt` — A2 —— 不存在的路径按新文件打开:状态栏提示"新文件"、Ctrl-O 真的创建出文件、能编译运行 (1.1K)
+- `.flower/scripts/wave5-a3-compile-esc.txt` — A3 —— 编译进行中按 Esc 终止编译作业(任何焦点下都生效) (1.3K)
+- `.flower/scripts/wave5-a6-tab-cycle.txt` — A6 —— 面板聚焦时连按 Tab,标签真的在轮换(用面板内容判别,不靠颜色) (1.7K)
+- `.flower/scripts/wave5-b1-resize.txt` — B1 —— 80x24 / 60x16 布局 + 20x5 <-> 200x60 猛拉缩放 200 次,不崩/不花屏/光标合法 (1.5K)
+- `.flower/scripts/wave5-b2-esc-kill.txt` — B2 —— 死循环程序:Ctrl-E 编译并运行 while(1),编辑器仍响应按键,Esc 能终止 (1.2K)
+- `.flower/scripts/wave5-b2b-timeout.txt` — B2b —— 死循环程序的 run_timeout_ms 兜底路径:不按任何键,超时后自动被杀 (590B)
+- `.flower/scripts/wave5-b3-flood.txt` — B3 —— 输出 100MB 的程序:编辑器不挂死、面板被裁剪、内存不爆(记录峰值 RSS) (1.1K)
+- `.flower/scripts/wave5-b3b-midflood.txt` — B3b —— 1.5MB 输出(超 run_output_limit 但不触发 hard_kill):被截断且退出码可见 (319B)
+- `.flower/scripts/wave5-b3c-real100mb.txt` — B3c —— run_output_limit 抬到 100MB,让整整 100MB 真的进到编辑器里,量峰值 RSS (421B)
+- `.flower/scripts/wave5-b4-ai-common.txt` — B4 —— AI 异常态下"编辑/编译照常可用、输入不卡、有中文提示"的通用脚本 (1.6K)
+- `.flower/scripts/wave5-b4-ai-states.sh` — B4 —— 三种 AI 异常态实测:无配置 / 错 key(本地假服务器回 401)/ 无网络(连不上) (4.8K)
+- `.flower/scripts/wave5-b5-bigfile.txt` — B5 —— 5 万行大文件:滚动 / 跳到文件尾 / 中间连按 20 次回车,量单帧渲染耗时 (1.4K)
+- `.flower/scripts/wave5-b6-binary-utf8.txt` — B6 —— 打开二进制 / 含非法 UTF-8 的文件:不崩、不花屏、能退出 (1000B)
+- `.flower/scripts/wave5-b7-readonly.txt` — B7 —— 只读文件保存失败 / 目标目录不可写:给中文错误提示、不崩、不丢数据 (1021B)
+- `.flower/scripts/wave5-c-find-help.txt` — 任务 C —— Ctrl-F 查找 与 F1 帮助浮层实测(§8.2) (3.2K)
+- `.flower/scripts/wave5-exit-loop.cpp` — pty 里反复"启动 cppide -> Ctrl-X (-> y) -> 退出",统计有没有卡住不退的 (8.3K)
+- `.flower/scripts/wave5-finalfix-help-page.txt` — F1 帮助浮层用 PgDn/PgUp/↓/↑ 翻页(Ui::scrollHelp)+ 退化尺寸不崩 (3.0K)
+- `.flower/scripts/wave5-finalfix-verify.sh` — Wave 5 最后一轮 5 项小修的专项验证(帮助列宽 / 扩展名 / 死代码 / F1 翻页 / 禁 core) (7.7K)
+- `.flower/scripts/wave5-keyprobe-cursor.txt` — 回归 —— ESC[A/B/C/D(普通模式)与 ESC O A/B/C/D(DECCKM)都必须是方向键 (1015B)
+- `.flower/scripts/wave5-pty-drive.cpp` — forkpty 驱动器 —— 在伪终端里真跑 TUI 程序,按脚本喂按键并断言屏幕输出 (21.7K)
+- `.flower/scripts/wave5-readme-verify.sh` — 逐条真跑 README.md 里承诺的命令,并校验 config.sample.json (2.9K)
+- `.flower/scripts/wave5-verify.sh` — Wave 5 总验证 —— 任务 A(6 项裁决)+ 任务 B(9 项敌意路径)+ 任务 C 一把跑完 (17.9K)
+
+## 产出(20)
+- `.flower/artifacts/architecture.md` — cppide 实现架构设计 (42.6K)
+- `.flower/artifacts/env-probe.md` — 构建环境探测报告 — ncurses + libcurl + C++17 (16.6K)
+- `.flower/artifacts/panel-header-fix.md` — panel.h 存储成员补齐 —— 受控头文件改动执行日志 (5.1K)
+- `.flower/artifacts/wave1-report.md` — Wave 1 报告 —— Makefile + 全部头文件 + mailbox.h 实现 (11.9K)
+- `.flower/artifacts/wave2-config.md` — Wave 2 · config.cpp 实现日志 (6.5K)
+- `.flower/artifacts/wave2-highlight.md` — Wave 2 · 语法高亮(src/highlight.cpp + tests/test_highlight.cpp) (8.3K)
+- `.flower/artifacts/wave2-json.md` — Wave 2 —— src/json.cpp 实现日志 (6.0K)
+- `.flower/artifacts/wave2-proc.md` — Wave 2 · proc 模块报告(runProcess + Runner) (7.9K)
+- `.flower/artifacts/wave2-textbuf.md` — Wave 2 — src/textbuf.cpp 实现日志 (6.5K)
+- `.flower/artifacts/wave2-util.md` — Wave 2 — util 模块实现日志 (7.3K)
+- `.flower/artifacts/wave3-aihttp.md` — Wave 3 — aihttp(HTTP/SSE 层)实现日志 (7.4K)
+- `.flower/artifacts/wave3-build-keys.md` — Wave 3 · build.cpp + keys.cpp + Makefile 修复 · 实施记录 (12.3K)
+- `.flower/artifacts/wave3-editor.md` — Wave 3 — Editor(src/editor.cpp)实现日志 (8.8K)
+- `.flower/artifacts/wave3-panel.md` — Wave 3 — panel.cpp(输出面板 + StdinBuffer)实现日志 (11.0K)
+- `.flower/artifacts/wave4-ai.md` — Wave 4 — `src/ai.cpp`(AiService)实现日志 (10.7K)
+- `.flower/artifacts/wave4-app.md` — Wave 4 · `src/app.cpp` + `src/main.cpp` 实现与验收记录 (11.5K)
+- `.flower/artifacts/wave4-ui.md` — Wave 4 · src/ui.cpp 验收记录 (36.4K)
+- `.flower/artifacts/wave5-finalfix.md` — Wave 5 最后一轮 —— 5 项小修的实施与实测 (14.7K)
+- `.flower/artifacts/wave5-polish.md` — Wave 5 —— 裁决落地 · 打磨 · 敌意路径实测 (30.8K)
+- `.flower/artifacts/wave5-readme.md` — Wave 5 · README + 示例配置:核对记录与差异清单 (10.0K)
+
+## 决策记录(4)
+- `.flower/notes/技术决策.md` — 技术决策记录(Wave 1) (2.5K)
+- `.flower/notes/跨模块约定.md` — 跨模块约定(Wave 1/2/3 沉淀 · Wave 4 开工前必读) (11.8K)
+- `.flower/notes/问答记录.md` — 需求问答记录 (2.0K)
+- `.flower/notes/需求.md` — 需求确认书 (4.2K)
+===CONV===
+# 跨模块约定(Wave 1/2/3 沉淀 · Wave 4 开工前必读)
+
+这不是风格建议,是**踩过的坑**。每条都有一句"为什么",违反哪条就会得到那条描述的 bug。
+新增约定请追加在末尾并写上为什么。
+
+---
+
+## 0. 头文件冻结
+
+**`src/*.h` 在 Wave 1 已冻结,任何签名/字段变更必须由协调者统一改,不许各 agent 自己动。**
+为什么:Wave 2/3/4 是并行的,同一个头被两路同时改会互相覆盖,而且改一个签名可能让另外
+三个已经通过 ASan 的 .cpp 编不过。要改就停下来报协调者。
+
+---
+
+## 1. curses 只能出现在 ui.cpp,且必须先 `#define NCURSES_NOMACROS 1`
+
+```cpp
+#define NCURSES_NOMACROS 1
+#include <curses.h>
+```
+为什么:curses.h 把 `clear() / erase() / move() / refresh() / timeout() / scroll() /
+border() / instr()` 定义成**函数式宏**,一旦进入公共头,`panel.h` 里的
+`int scroll() const;`、`buf.erase(r)`、`panel.clear()` 就会被预处理器当宏调用,
+报出 `src/panel.h:64:8: error: expected identifier before ',' token` 这种完全看不懂的错。
+`TextBuffer::erase` 是 architecture.md 规定的名字,改不了,所以这条不可回避。
+(实测反证见 `.flower/scripts/wave1-verify.sh` 第 3 步。)
+
+## 2. 归一化键码 + Alt 合成的分工
+
+`ui.cpp` 负责把 curses 的键**归一化**到 `keys.h` 的键码空间后才交给上层;
+`app.cpp` 只比 `k == kKeyNone` / `k == kKeyResize`,永远不 include curses.h。
+归一化规则:控制字符 0..0x1F 与 0x7F 原样 / `KEY_*`(0x101..0x1FF)原样 /
+可打印字符 = `Char(cp) = 0x1000000+cp` / `KEY_RESIZE` → `kKeyResize` / `ERR` → `kKeyNone`。
+为什么:ncurses 的 `KEY_DOWN`(0402=258)与 Unicode U+0102 数值重叠,直接返回
+`wget_wch` 的码点会把 "Ă" 当方向键。
+
+Alt 的合成规则(`keys.h` 没有给签名,所以这段代码必须写在 `ui.cpp` 里,逐字照做):
+
+```cpp
+// 收到 27 之后:nodelay 下再读一次
+int second = readKeyNonBlocking();       // 内部同样要先归一化
+return (second == kKeyNone) ? 27 : Alt(second);
+```
+为什么:Terminal.app 默认不发 Meta 位,把 Option 当 Esc 前缀发。**第二次读也必须先归一化**
+再打 `kAltFlag`,否则 `Alt-←`(终端发 `ESC` `ESC[D`)拿到的是裸 `[`,`Alt(KEY_LEFT)`
+永远匹配不上。`tests/test_keys.cpp::case_alt_synthesis` 里有一份等价实现钉住这条规则。
+
+## 3. `keys.cpp` 里的 KEY_* 数值是硬编码镜像
+
+`keys.cpp` 不能 include curses.h(见第 1 条),所以里面的 `kNcLeft = 260` 之类是手抄的。
+唯一的看门人是 `tests/test_keys.cpp` 顶部那一排 `static_assert(KEY_LEFT == 260, ...)`。
+为什么:数值一旦对不上,症状是"某个键没反应",极难定位;让它在编译期就红。
+
+## 4. 调用 util 的函数一律写 `util::` 前缀
+
+```cpp
+util::basename(path)   // ✅
+basename(path)         // ❌ 可能静默调到 glibc 的 ::basename
+```
+为什么:`util::basename` / `util::dirname` 与 glibc 的 `::basename`(`<string.h>`)撞名。
+裸调在 ADL 下可能选中 C 版本 —— 它**会修改入参缓冲区**、对 `const char*` 是 UB,
+而且返回值语义不同。编译不报错,行为静默出错。
+
+## 5. `TextBuffer::undo()/redo()` 不能包进 `TextBuffer::Edit`
+
+在 `Edit` 作用域内调用它们会**返回 false 什么都不做**。
+为什么:`Edit` 期间撤销日志正在记录中(journaling 挂起),此时回滚会把日志弄成不一致状态,
+所以实现选择直接拒绝。要撤销就在 `Edit` 析构之后再调。
+
+## 6. `TextBuffer::saveFile()` 不改 `path_`
+
+"另存为"必须 `setPath(new_path)` 之后再 `saveFile()`。
+为什么:`saveFile(path)` 只是往那个路径写字节,不认为发生了"当前文件变了"。
+忘了 `setPath` 的症状是:另存成功,但状态栏和后续 Ctrl-O 还指着老文件。
+
+## 7. `setlocale(LC_ALL, "")` 必须在 `initscr()` 之前调
+
+为什么:util 的 `charDisplayWidth` / `displayWidth` / `byteToDisplayCol` 走 `wcwidth`,
+ncurses 的宽字符输出也依赖 locale。晚于 `initscr()` 调用的话,中文全部按宽度 1 算,
+光标位置和 AI 面板换行全部错位。放在 `main()` 的第一行。
+
+## 8. 字节列 ⇄ 显示列只走 util 的那一对函数
+
+`byteToDisplayCol` / `displayColToByte` 互为逆运算;`displayColToByte` 的列落在
+宽字符中间时**向左吸附**(返回该字符的起始字节)。不要另造一套换算。
+为什么:两套换算迟早在 Tab 展开或宽字符边界上给出不同答案,表现为"光标点在中文上就跳位"。
+
+## 9. `json.h` 没有路径式取值
+
+```cpp
+v["a"][0]["b"]         // ✅ 已做越界/类型安全,缺失返回 Null
+v.at("a/0/b")          // ❌ 不存在这个 API
+```
+为什么:`mj::Value` 刻意做小。链式下标对缺失键/越界下标/类型不符都返回 Null 而不抛,
+所以解析 AI 响应不需要写 try/catch。
+
+## 10. `~Runner()` 会 SIGKILL 在飞作业
+
+为什么:否则退出编辑器时要等满 `timeout_ms`(编译是 30s)才能真正结束,用户会以为卡死。
+代价是极端情况下正在写的输出文件可能不完整 —— **协调者已确认接受这个取舍**。
+
+## 11. `ConfigLoader::load` 的 `err` 只装致命级问题
+
+字段级问题(类型不对、值越界)一律只进 `Config::warnings`,`err` 保持空,函数照常返回。
+`load()` 永不返回失败。为什么:需求硬要求"配置有问题也绝不崩、绝不中断启动"。
+调用方判空 `err` 来决定是否弹致命提示,遍历 `warnings` 往状态栏/AI 面板灌提示。
+
+## 12. `runProcess` 的第 2 个参数 `std::atomic<pid_t>* out_pgid`
+
+`ProcResult runProcess(const ProcSpec&, std::atomic<pid_t>* out_pgid = nullptr);`
+为什么:`Runner::killInFlight()` 要 `kill(-pgid, ...)` 才能连带杀掉孙子进程,而 pgid 只有
+spawn 之后才知道。这是唯一能把它交出来的通道。**自己起进程又想支持取消的地方必须传它。**
+另:`runProcess` 是阻塞式的,只能在工作线程调,UI 线程调它就等于把"死循环程序挂死编辑器"
+这个 bug 亲手写回来。
+
+## 13. 编译子进程必须带 `LC_ALL=C`
+
+`ProcSpec::env_extra` 里必须有 `"LC_ALL=C"`(`Builder::compileSpec` 已经放好了,别删)。
+为什么:中文 locale 下 gcc 输出的是 `错误:` / `警告:`,`Builder::parseDiagnostics`
+一条也认不出来,用户会看到"编译失败,0 个错误"、而且一个诊断都跳不过去。
+`tests/test_diag.cpp::case_chinese` 里有一条中文样本专门证明这个陷阱是真的。
+
+---
+
+## 14. 编译诊断的组装责任在 App,不在 Runner(Wave 1 §3.1(4))
+
+`Runner` 只填 `AppEvent::run`(`shared_ptr<ProcResult>`)+ `gen`;
+`App::onCompileDone` 再调 `Builder::analyze(pr, binary_path, syntax_only)` 得到 `CompileOutcome`。
+为什么:否则 `proc.cpp` 就得依赖 `build.h`,破坏 Wave 2 的并行不变式。
+`ai.h` 用 `struct CompileOutcome;` / `struct ProcResult;` 前置声明持有它们,
+**构造这两个 shared_ptr 的地方必须自己 include `build.h` / `proc.h`**(即 `app.cpp`)。
+
+## 15. `Diag::out_line` 的语义与面板分行必须用同一个切分函数
+
+`Builder::parseDiagnostics` 填的 `out_line` 是**该诊断在 `stderr_text` 里的 0 起行号**,
+切分用的是 `util::splitLines`。面板往里灌编译输出时也必须用 `util::splitLines`,
+否则双向定位(面板里 Enter 跳源码 / Ctrl-N 高亮面板行)会整体错位。
+面板若在前面插了标题行,请把偏移量加到 `out_line` 上再存。
+
+## 16. 头文件的语法检查走 stdin TU,不是直接编那个 .h
+
+`Builder::compileSpec` 对 `.h/.hpp/...` 生成的是
+`cxx <cxxflags> -fsyntax-only -x c++ -` + `stdin_data = "#include \"<绝对路径>\"\n"`。
+为什么:直接 `g++ -fsyntax-only foo.h` 会无条件报 `warning: #pragma once in main file`,
+该警告**无法用任何 `-Wno-*` 关掉**(libcpp 里是 `CPP_W_NONE`),用户每检查一次头文件
+就会看到一条假警告。走 stdin 既没有假警告,诊断里的文件名/行号也仍然指向真实的头文件。
+(Wave 1 的 `make check-headers` 用的是同一招,见 wave1-report §2.1。)
+`.h` 一律用 `cfg.cxx`(不是 `cc`),`TextBuffer::langFromPath(".h")` 也返回 `Lang::Cpp`。
+
+## 17. `Makefile` 的 `CPPFLAGS` 带 `-Isrc`
+
+`tests/*.cpp` 里写的是 `#include "config.h"`(不带 `../src/`),靠 `-Isrc` 找到。
+放 `CPPFLAGS` 而不是 `CXXFLAGS`:`check-headers` 的 `SYNFLAGS` 会过滤 `CXXFLAGS`,
+而 `%.o` / `check-headers` / `tests` 三个目标都会展开 `CPPFLAGS`。
+
+## 18. 键位:这些键一个都不许绑
+
+`Ctrl-C`(SIGINT)、`Ctrl-Z`(SIGTSTP)、`Ctrl-S`/`Ctrl-Q`(XON/XOFF 冻屏)、
+`Ctrl-\`(SIGQUIT+core)、`Ctrl-Y`(macOS VDSUSP)、`Ctrl-J`(10)、`Ctrl-H`(8)。
+`tests/test_keys.cpp` 会断言它们 `lookupAction() == Action::None`。
+注意 `Ctrl-M`(13)/`Ctrl-I`(9) 这两个键码**必须**有动作 —— 它们就是 Enter/Tab 本身;
+"不绑"的真实含义是"不作为独立 Ctrl 快捷键、键名永远显示 Enter/Tab"。
+已知代价:某些终端把 Backspace 发成 `8` 而不是 `127`/`KEY_BACKSPACE`,那种终端下退格会失灵;
+`keypad(stdscr, TRUE)` 下 ncurses 基本都会给 `KEY_BACKSPACE`,暂按 §8.2 的规定不绑 8。
+
+## 19. `ui.cpp::normalizeKey` 必须把 `Ctrl-J(10)` 折成 `Enter(13)`
+
+```cpp
+if (cp == 10u) return 13;      // ui.cpp:183,这一行删掉回车就彻底失灵
+```
+
+**为什么:**
+1. tty 的 `ICRNL` 会把终端发来的 CR(13)翻成 LF(10);
+2. ncurses 的 `raw()` **不清 `ICRNL`** —— 它只关 `IXON/BRKINT/PARMRK/ICANON/ISIG/IEXTEN`;
+   现代 ncurses 的 `nonl()` 也只影响**输出**(只置 `SP->_nl`,不碰 termios);
+3. 于是 Enter 以 **10** 到达 `wget_wch`;
+4. 而按本文件 §18,`Ctrl-J(10)` 是"一个都不许绑"的键,`lookupAction(10) == Action::None`
+   还有 `tests/test_keys.cpp` 的断言看着。
+
+⇒ 不归一化 = **回车完全没反应**(打字能打、换行不了),而且症状看起来像"编辑器坏了",
+极难联想到 termios。§18 里 Ctrl-J 之所以不绑,理由本来就是"它是 Enter 的别名",
+所以在归一化层把 10 折成 13 与 §18 同向,不是绕过它。
+
+**分工不能反过来:** 折叠只能发生在 `ui.cpp`(归一化层),
+**不许**改成"给 `keys.cpp` 里的 10 绑上 Enter 动作" —— 那会让
+`lookupAction(Ctrl-J) != Action::None`,直接违反 §18 并弄红 `test_keys.cpp`。
+
+实测证据:`.flower/artifacts/wave4-ui.md` §4(pty 里按 `\r`,若无此行则缓冲区不换行)。
+`tests/test_ui.cpp::键码归一化` 有一条 `normalizeKey(OK, 10) == 13` 钉住它。
+
+## 20. 启动阶段打开的路径必须是**普通文件**(`S_ISREG`)
+
+`main.cpp::checkOpenPath` 在 `util::readFile` 之前先 `stat` 一次判 `S_ISREG`。
+为什么:命名管道上的 `open(O_RDONLY)` 会**一直阻塞**到有人写它。实测
+`mkfifo x.cpp && cppide x.cpp` 在修之前会永久挂死在启动阶段(`timeout` 报 124),
+连 endwin 安全网都跑不到 —— 用户看到的是一个完全没反应的终端。
+字符/块设备、套接字同理:没有"当源码编辑"的意义,一律在入口拒掉。
+`tests/test_openpath.cpp::case_reject_fifo` 钉住这条(带 8s 超时,挂住就是失败)。
+
+## 21. `AiDone` 的语义是**替换**,不是追加(Wave 5 协调者裁决)
+
+* `AiDelta.text` = 增量;`AiDone.text` = **完整最终文本**
+  (写代码模式已在 `ai.cpp::postprocessCompletion` 做完后处理,练习模式已追加【推理过程】)。
+* `App::onAiDelta` 只把增量累加进 `ai_stream_`,**永不落地** —— 既不 `setGhost`
+  也不往面板 append;`App::onAiDone` 只认 `ev.text` 一个来源。
+
+为什么:两边都落地就会显示两遍。而"取 `ev.text` 与 `ai_stream_` 中较长者"这种兼容写法
+更坏 —— 写代码模式的后处理**会让最终文本比 delta 原文短**(去掉模型重复的行前缀、
+截到 `ghost_max_lines`),取较长者等于把后处理结果丢掉,ghost 里出现重复代码。
+`tests/test_appai.cpp` 用行为断言 + 对 `onAiDelta`/`onAiDone` 函数体的 grep 断言双重钉住。

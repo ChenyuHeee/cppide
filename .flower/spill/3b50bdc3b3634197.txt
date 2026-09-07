@@ -1,0 +1,75 @@
+265	4. 两个输出管道都 EOF(或已 SIGKILL)之后才 `waitpid(pid, &st, 0)`。**先 waitpid 再排空 = 经典死锁**。
+266	5. 全程不装 `SIGCHLD` handler(我们总是 waitpid 指定 pid),避免干扰 ncurses / libcurl。
+267	6. `main()` 里一次性 `signal(SIGPIPE, SIG_IGN)`(libcurl 也需要)。
+268	
+269	### 4.2 异步包装
+270	
+271	```cpp
+272	enum class JobKind { Compile, Run };
+273	
+274	class Runner {                      // 一个工作线程 + 作业队列,作业串行
+275	public:
+276	  using JobId = uint64_t;
+277	  explicit Runner(Mailbox<AppEvent>* out);
+278	  ~Runner();                        // 关队列并 join,绝不 detach
+279	  JobId submit(ProcSpec spec, JobKind kind);
+280	  void killInFlight();              // 读原子 pgid 并 kill(-pgid, SIGKILL)
+281	  bool busy() const;
+282	private:
+283	  std::atomic<pid_t> cur_pgid_{0};  // 工作线程 spawn 后写入
+284	};
+285	```
+286	
+287	**"死循环程序挂死编辑器"这个问题有三道独立防线**:
+288	1. 子进程从不在 UI 线程跑 —— UI **在结构上不可能**被挂住,主循环照常 60ms 一跳。
+289	2. `timeout_ms`(默认 5000)+ 输出上限 + `hard_kill_bytes`。
+290	3. 用户逃生口:运行进行中,在【运行】面板按 **Esc** 立即 `killInFlight()`。注意终端里 Ctrl-C 不可用(我们 raw 模式且不绑它),所以必须提供这个显式键,并写进状态栏提示:`运行中… Esc 终止`。
+291	
+292	### 4.3 编译与诊断
+293	
+294	```cpp
+295	enum class DiagSev { Error, Warning, Note, Info };
+296	
+297	struct Diag {
+298	  std::string file; int line = 0; int col = 0;
+299	  DiagSev sev = DiagSev::Error;
+300	  std::string message;
+301	  int out_line = 0;                 // 在编译面板中的行号,用于双向定位
+302	};
+303	
+304	struct CompileOutcome {
+305	  bool ok = false;
+306	  std::string binary_path;
+307	  std::vector<Diag> diags;
+308	  int errors = 0, warnings = 0;
+309	  ProcResult proc;
+310	};
+311	
+312	class Builder {
+313	public:
+314	  explicit Builder(const Config& cfg);
+315	  // 纯函数,可单测,无副作用
+316	  ProcSpec compileSpec(const std::string& src, Lang lang,
+317	                       const std::string& out_path) const;
+318	  ProcSpec runSpec(const std::string& binary,
+319	                   const std::string& stdin_data) const;
+320	  static std::string tempBinaryPath(const std::string& src);   // $TMPDIR/cppide-<hash>-<name>
+321	  static std::vector<Diag> parseDiagnostics(const std::string& stderr_text);
+322	  static bool binaryStale(const std::string& src, const std::string& bin);  // mtime
+323	};
+324	```
+325	
+326	- 语言选择:`.c` → `cfg.cc` + `cflags`;`.cpp/.cc/.cxx/.C` → `cfg.cxx` + `cxxflags`;`.h/.hpp` → `cxx` + `-fsyntax-only`,不产出二进制,面板提示"头文件仅做语法检查"。
+327	- 编译命令 = `cxx` + flags + `-o out` + src。**不经过 shell**,参数逐个进 argv,路径含空格天然安全。
+328	- 子进程 env 带 `LC_ALL=C`,强制编译器输出英文 `error:`/`warning:`,否则中文 locale 下诊断解析全部失效。这是很容易漏的一条。
+329	- **诊断解析不用 `<regex>`**(编译慢、体积大):手写解析器,从左往右找第一个 `:<数字>` 作为行号边界(路径本身可能含 `:`),然后可选的 `:<数字>` 列号,再取 `error|warning|note|fatal error` 严重度,余下为 message。`In file included from …` 与 `^~~~` 指示行原样进面板但不计入 `diags`。
+330	- 跳行:编译面板每行携带 `diag_index`;面板聚焦时 `Enter` 跳到该诊断;不聚焦时 `Ctrl-N`/`Ctrl-P` 顺序遍历诊断。只有 `file` 的 basename 与当前缓冲区一致的诊断可跳(需求只管单文件)。
+331	
+332	### 4.4 运行
+333	
+334	- stdin 来源:配置了 `stdin_file` 则读文件,否则用【输入】面板里编辑的内容(`StdinBuffer`,内部就是一个 `TextBuffer`,免费获得编辑与撤销)。
+335	- 结果进【运行】面板:stdout 常规色,stderr 红色,末尾一行 `ProcResult::summary()`(退出码 / 信号名 / 用时 / 是否截断)。
+336	- `Ctrl-R` 时若 `binaryStale()` 或不存在,自动先编译;编译失败则不运行,并自动聚焦编译面板。
+337	
+338	---
+339	

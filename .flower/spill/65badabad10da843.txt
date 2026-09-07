@@ -1,0 +1,165 @@
+# 跨模块约定(Wave 1/2/3 沉淀 · Wave 4 开工前必读)
+
+这不是风格建议,是**踩过的坑**。每条都有一句"为什么",违反哪条就会得到那条描述的 bug。
+新增约定请追加在末尾并写上为什么。
+
+---
+
+## 0. 头文件冻结
+
+**`src/*.h` 在 Wave 1 已冻结,任何签名/字段变更必须由协调者统一改,不许各 agent 自己动。**
+为什么:Wave 2/3/4 是并行的,同一个头被两路同时改会互相覆盖,而且改一个签名可能让另外
+三个已经通过 ASan 的 .cpp 编不过。要改就停下来报协调者。
+
+---
+
+## 1. curses 只能出现在 ui.cpp,且必须先 `#define NCURSES_NOMACROS 1`
+
+```cpp
+#define NCURSES_NOMACROS 1
+#include <curses.h>
+```
+为什么:curses.h 把 `clear() / erase() / move() / refresh() / timeout() / scroll() /
+border() / instr()` 定义成**函数式宏**,一旦进入公共头,`panel.h` 里的
+`int scroll() const;`、`buf.erase(r)`、`panel.clear()` 就会被预处理器当宏调用,
+报出 `src/panel.h:64:8: error: expected identifier before ',' token` 这种完全看不懂的错。
+`TextBuffer::erase` 是 architecture.md 规定的名字,改不了,所以这条不可回避。
+(实测反证见 `.flower/scripts/wave1-verify.sh` 第 3 步。)
+
+## 2. 归一化键码 + Alt 合成的分工
+
+`ui.cpp` 负责把 curses 的键**归一化**到 `keys.h` 的键码空间后才交给上层;
+`app.cpp` 只比 `k == kKeyNone` / `k == kKeyResize`,永远不 include curses.h。
+归一化规则:控制字符 0..0x1F 与 0x7F 原样 / `KEY_*`(0x101..0x1FF)原样 /
+可打印字符 = `Char(cp) = 0x1000000+cp` / `KEY_RESIZE` → `kKeyResize` / `ERR` → `kKeyNone`。
+为什么:ncurses 的 `KEY_DOWN`(0402=258)与 Unicode U+0102 数值重叠,直接返回
+`wget_wch` 的码点会把 "Ă" 当方向键。
+
+Alt 的合成规则(`keys.h` 没有给签名,所以这段代码必须写在 `ui.cpp` 里,逐字照做):
+
+```cpp
+// 收到 27 之后:nodelay 下再读一次
+int second = readKeyNonBlocking();       // 内部同样要先归一化
+return (second == kKeyNone) ? 27 : Alt(second);
+```
+为什么:Terminal.app 默认不发 Meta 位,把 Option 当 Esc 前缀发。**第二次读也必须先归一化**
+再打 `kAltFlag`,否则 `Alt-←`(终端发 `ESC` `ESC[D`)拿到的是裸 `[`,`Alt(KEY_LEFT)`
+永远匹配不上。`tests/test_keys.cpp::case_alt_synthesis` 里有一份等价实现钉住这条规则。
+
+## 3. `keys.cpp` 里的 KEY_* 数值是硬编码镜像
+
+`keys.cpp` 不能 include curses.h(见第 1 条),所以里面的 `kNcLeft = 260` 之类是手抄的。
+唯一的看门人是 `tests/test_keys.cpp` 顶部那一排 `static_assert(KEY_LEFT == 260, ...)`。
+为什么:数值一旦对不上,症状是"某个键没反应",极难定位;让它在编译期就红。
+
+## 4. 调用 util 的函数一律写 `util::` 前缀
+
+```cpp
+util::basename(path)   // ✅
+basename(path)         // ❌ 可能静默调到 glibc 的 ::basename
+```
+为什么:`util::basename` / `util::dirname` 与 glibc 的 `::basename`(`<string.h>`)撞名。
+裸调在 ADL 下可能选中 C 版本 —— 它**会修改入参缓冲区**、对 `const char*` 是 UB,
+而且返回值语义不同。编译不报错,行为静默出错。
+
+## 5. `TextBuffer::undo()/redo()` 不能包进 `TextBuffer::Edit`
+
+在 `Edit` 作用域内调用它们会**返回 false 什么都不做**。
+为什么:`Edit` 期间撤销日志正在记录中(journaling 挂起),此时回滚会把日志弄成不一致状态,
+所以实现选择直接拒绝。要撤销就在 `Edit` 析构之后再调。
+
+## 6. `TextBuffer::saveFile()` 不改 `path_`
+
+"另存为"必须 `setPath(new_path)` 之后再 `saveFile()`。
+为什么:`saveFile(path)` 只是往那个路径写字节,不认为发生了"当前文件变了"。
+忘了 `setPath` 的症状是:另存成功,但状态栏和后续 Ctrl-O 还指着老文件。
+
+## 7. `setlocale(LC_ALL, "")` 必须在 `initscr()` 之前调
+
+为什么:util 的 `charDisplayWidth` / `displayWidth` / `byteToDisplayCol` 走 `wcwidth`,
+ncurses 的宽字符输出也依赖 locale。晚于 `initscr()` 调用的话,中文全部按宽度 1 算,
+光标位置和 AI 面板换行全部错位。放在 `main()` 的第一行。
+
+## 8. 字节列 ⇄ 显示列只走 util 的那一对函数
+
+`byteToDisplayCol` / `displayColToByte` 互为逆运算;`displayColToByte` 的列落在
+宽字符中间时**向左吸附**(返回该字符的起始字节)。不要另造一套换算。
+为什么:两套换算迟早在 Tab 展开或宽字符边界上给出不同答案,表现为"光标点在中文上就跳位"。
+
+## 9. `json.h` 没有路径式取值
+
+```cpp
+v["a"][0]["b"]         // ✅ 已做越界/类型安全,缺失返回 Null
+v.at("a/0/b")          // ❌ 不存在这个 API
+```
+为什么:`mj::Value` 刻意做小。链式下标对缺失键/越界下标/类型不符都返回 Null 而不抛,
+所以解析 AI 响应不需要写 try/catch。
+
+## 10. `~Runner()` 会 SIGKILL 在飞作业
+
+为什么:否则退出编辑器时要等满 `timeout_ms`(编译是 30s)才能真正结束,用户会以为卡死。
+代价是极端情况下正在写的输出文件可能不完整 —— **协调者已确认接受这个取舍**。
+
+## 11. `ConfigLoader::load` 的 `err` 只装致命级问题
+
+字段级问题(类型不对、值越界)一律只进 `Config::warnings`,`err` 保持空,函数照常返回。
+`load()` 永不返回失败。为什么:需求硬要求"配置有问题也绝不崩、绝不中断启动"。
+调用方判空 `err` 来决定是否弹致命提示,遍历 `warnings` 往状态栏/AI 面板灌提示。
+
+## 12. `runProcess` 的第 2 个参数 `std::atomic<pid_t>* out_pgid`
+
+`ProcResult runProcess(const ProcSpec&, std::atomic<pid_t>* out_pgid = nullptr);`
+为什么:`Runner::killInFlight()` 要 `kill(-pgid, ...)` 才能连带杀掉孙子进程,而 pgid 只有
+spawn 之后才知道。这是唯一能把它交出来的通道。**自己起进程又想支持取消的地方必须传它。**
+另:`runProcess` 是阻塞式的,只能在工作线程调,UI 线程调它就等于把"死循环程序挂死编辑器"
+这个 bug 亲手写回来。
+
+## 13. 编译子进程必须带 `LC_ALL=C`
+
+`ProcSpec::env_extra` 里必须有 `"LC_ALL=C"`(`Builder::compileSpec` 已经放好了,别删)。
+为什么:中文 locale 下 gcc 输出的是 `错误:` / `警告:`,`Builder::parseDiagnostics`
+一条也认不出来,用户会看到"编译失败,0 个错误"、而且一个诊断都跳不过去。
+`tests/test_diag.cpp::case_chinese` 里有一条中文样本专门证明这个陷阱是真的。
+
+---
+
+## 14. 编译诊断的组装责任在 App,不在 Runner(Wave 1 §3.1(4))
+
+`Runner` 只填 `AppEvent::run`(`shared_ptr<ProcResult>`)+ `gen`;
+`App::onCompileDone` 再调 `Builder::analyze(pr, binary_path, syntax_only)` 得到 `CompileOutcome`。
+为什么:否则 `proc.cpp` 就得依赖 `build.h`,破坏 Wave 2 的并行不变式。
+`ai.h` 用 `struct CompileOutcome;` / `struct ProcResult;` 前置声明持有它们,
+**构造这两个 shared_ptr 的地方必须自己 include `build.h` / `proc.h`**(即 `app.cpp`)。
+
+## 15. `Diag::out_line` 的语义与面板分行必须用同一个切分函数
+
+`Builder::parseDiagnostics` 填的 `out_line` 是**该诊断在 `stderr_text` 里的 0 起行号**,
+切分用的是 `util::splitLines`。面板往里灌编译输出时也必须用 `util::splitLines`,
+否则双向定位(面板里 Enter 跳源码 / Ctrl-N 高亮面板行)会整体错位。
+面板若在前面插了标题行,请把偏移量加到 `out_line` 上再存。
+
+## 16. 头文件的语法检查走 stdin TU,不是直接编那个 .h
+
+`Builder::compileSpec` 对 `.h/.hpp/...` 生成的是
+`cxx <cxxflags> -fsyntax-only -x c++ -` + `stdin_data = "#include \"<绝对路径>\"\n"`。
+为什么:直接 `g++ -fsyntax-only foo.h` 会无条件报 `warning: #pragma once in main file`,
+该警告**无法用任何 `-Wno-*` 关掉**(libcpp 里是 `CPP_W_NONE`),用户每检查一次头文件
+就会看到一条假警告。走 stdin 既没有假警告,诊断里的文件名/行号也仍然指向真实的头文件。
+(Wave 1 的 `make check-headers` 用的是同一招,见 wave1-report §2.1。)
+`.h` 一律用 `cfg.cxx`(不是 `cc`),`TextBuffer::langFromPath(".h")` 也返回 `Lang::Cpp`。
+
+## 17. `Makefile` 的 `CPPFLAGS` 带 `-Isrc`
+
+`tests/*.cpp` 里写的是 `#include "config.h"`(不带 `../src/`),靠 `-Isrc` 找到。
+放 `CPPFLAGS` 而不是 `CXXFLAGS`:`check-headers` 的 `SYNFLAGS` 会过滤 `CXXFLAGS`,
+而 `%.o` / `check-headers` / `tests` 三个目标都会展开 `CPPFLAGS`。
+
+## 18. 键位:这些键一个都不许绑
+
+`Ctrl-C`(SIGINT)、`Ctrl-Z`(SIGTSTP)、`Ctrl-S`/`Ctrl-Q`(XON/XOFF 冻屏)、
+`Ctrl-\`(SIGQUIT+core)、`Ctrl-Y`(macOS VDSUSP)、`Ctrl-J`(10)、`Ctrl-H`(8)。
+`tests/test_keys.cpp` 会断言它们 `lookupAction() == Action::None`。
+注意 `Ctrl-M`(13)/`Ctrl-I`(9) 这两个键码**必须**有动作 —— 它们就是 Enter/Tab 本身;
+"不绑"的真实含义是"不作为独立 Ctrl 快捷键、键名永远显示 Enter/Tab"。
+已知代价:某些终端把 Backspace 发成 `8` 而不是 `127`/`KEY_BACKSPACE`,那种终端下退格会失灵;
+`keypad(stdscr, TRUE)` 下 ncurses 基本都会给 `KEY_BACKSPACE`,暂按 §8.2 的规定不绑 8。

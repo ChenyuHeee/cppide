@@ -1,0 +1,664 @@
+# cppide 验收审计报告(独立审计员)
+
+> 审计日期:2026-09-06 / 09-07
+> 审计环境:Debian aarch64,g++ (Debian) 14.2.0,ncursesw 6.5.20250216,libcurl(gnutls),Python 3.13.15
+> 审计对象:`/work` 下的 cppide,对照 `.flower/notes/需求.md`(冻结的需求确认书)
+> 立场:**独立验收**。之前 agent 的自述报告一律当作"被审计对象的陈述",全部结论以本人重跑的证据为准。
+> 凭据纪律:**全程未使用、未猜测、未尝试获取任何真实 API key**。所有 AI 路径一律用
+> 假 key(`FAKEKEY_*` / `AUDITFAKEKEY_*` / `UNIQUEKEY_*`)+ 本机 `127.0.0.1` 上的假 SSE 端点,
+> 不可路由地址只用 RFC5737 保留段 `203.0.113.0/24`。未向 `api.deepseek.com` 发过任何请求。
+
+---
+
+## 0. 本次审计新增的工具与脚本
+
+| 脚本 | 作用 |
+|---|---|
+| `.flower/scripts/audit-fake-ai-server.py` | 自写的假 OpenAI 兼容 SSE 端点。按 URL 路径切换 正常补全 / 违规含代码块回复 / 500 / 401 / 畸形 JSON / 非 JSON / 超慢 / 秒断连,并把收到的请求(path + headers + body)逐条落盘供断言 |
+| `.flower/scripts/audit-ai-modes.sh` | 验收 6 / 7 的端到端(本报告最核心的证据来源) |
+| `.flower/scripts/audit-net-failures.sh` | 验收 9 的六种异常路径 + 在飞期间键盘存活 |
+| `.flower/scripts/audit-open-edit-save.sh` | 验收 2 的四种扩展名 + 从 ANSI 流里抓高亮属性 |
+| `.flower/scripts/audit-build-run-mode.sh` | 验收 3 / 4 / 5 |
+| `.flower/scripts/audit-config-key.sh` | 验收 8 |
+| `.flower/scripts/audit-readme-keys.sh` | 验收 10:README 逐条核对 + 真按 18 个快捷键 |
+| `.flower/scripts/audit-asan-smoke.sh` | 验收 12:ASan/UBSan/LSan 下 11 个场景的 pty 冒烟 |
+| `.flower/scripts/audit-idle-cost.sh` | 复现本次发现的 P1 问题(写代码模式空转烧钱) |
+
+### 0.1 先验证"验证工具"本身可信
+
+审计前先对 pty 驱动器做了**正负控**,避免拿一个"永远 PASS 的假机器"去审计:
+
+```
+负控:expect ZZZ_NEVER_APPEARS_ZZZ  -> 退出码 1(== 有失败 ==)  ✅ 会失败
+正控:expect cppide                 -> 退出码 0(== 全部通过 ==)✅ 会通过
+```
+
+**驱动器的一个坑(踩了,记下来)**:`wave5-pty-drive.cpp` 的第 4 个参数名叫 `raw_out`,
+但它写进去的是**过滤掉转义序列后的文本**(`g_plain`,第 592–593 行);
+**真正的原始字节流在 `<raw_out>.raw`**(第 594–595 行)。
+一开始拿错文件去抓 ANSI 属性,得出"全部 token 同色、没有高亮"的假结论。
+凡是要断言颜色/属性的,必须用 `.raw` 那个文件。
+
+### 0.2 两类会制造假失败的断言陷阱(本次踩到,已在脚本里注释固化)
+
+1. **ncurses 是差量重绘**。状态栏从 `1:1` 变成 `12:23` 时,ncurses 只重写发生变化的格子,
+   过滤后的流里会残留成 `2:23`,看起来像"跳错了行"。
+   → 凡是断言光标落点,**一律走文件系统**(在落点敲一个标记、存盘、看标记在第几行)。
+2. **逐字符回显**。连续敲 `ZZALIVE1`,每个字符各触发一次重绘,过滤后字符之间被插入空格,
+   `expect "ZZALIVE1"` 永远匹配不上。
+   → 凡是断言"输入生效",**一律走文件系统**(存盘后 grep)。
+
+本报告里凡标注"文件系统断言"的证据,都不受这两个陷阱影响。
+
+---
+
+## 1. 验收标准逐条
+
+### 验收 1 — 独立可执行文件,终端直接运行,不依赖 vim/neovim/VSCode
+
+**我怎么验的**
+1. `make clean && make -j4` 从干净状态全量重建。
+2. `ldd ./cppide` 看动态依赖。
+3. `grep -rniE '\b(vim|nvim|neovim|emacs|nano|vscode|"code"|subl)\b' src/ Makefile`。
+4. 查全部进程创建点(`system|popen|exec*|fork|posix_spawn`)。
+
+**证据**
+- 重建:`exit=0`,**warning 0 条,error 0 条**(`grep -c 'warning:' /tmp/build_full.log` → 0)。
+- 产物 605,536 字节。直接依赖只有:
+  `libncursesw.so.6`、`libtinfo.so.6`、`libcurl-gnutls.so.4`、`libstdc++`、`libgcc_s`、`libc`
+  (其余全是 libcurl 的传递依赖:gnutls/nghttp2/krb5/… 属于 libcurl 自身的链)。
+- 外部编辑器 grep:**0 处**。唯一命中是 `src/keys.cpp:75` 一句注释里提到 "emacs 习惯"(说的是键位风格,不是调用)。
+- 进程创建点只有两处,都在 `src/proc.cpp`:`::fork()`(第 466 行)与 `::execvp()`(第 253 行),
+  用途是拉起编译器和运行用户程序。**没有任何地方拉起外部编辑器。**
+
+**结论:通过**
+
+---
+
+### 验收 2 — 打开/编辑/保存 .c/.cpp/.h/.hpp + C/C++ 语法高亮
+
+**我怎么验的**
+四种扩展名各在 pty 里真开一次、敲一个唯一标记、`Ctrl-O` 存盘、`Ctrl-X` 退出,再读磁盘断言。
+高亮部分:造一个把关键字/字符串/注释/数字/预处理指令分行摆开的 `.cpp`,在 pty 里打开,
+从**真正的原始字节流**(`.raw`)里按 SGR 分段,把每个 token 归到它所在段的属性上。
+
+**证据**(`audit-open-edit-save.sh`,5/5 通过)
+```
+PASS  .c   打开/编辑/保存 —— 磁盘内容正确
+PASS  .cpp 打开/编辑/保存 —— 磁盘内容正确
+PASS  .h   打开/编辑/保存 —— 磁盘内容正确
+PASS  .hpp 打开/编辑/保存 —— 磁盘内容正确
+
+关键字 int          SGR=['32']   (绿)
+字符串 zzstringlit  SGR=['36']   (青)
+注释   zzcommentword SGR=['34']  (蓝)
+数字   1234567      SGR=['31']   (红)
+预处理 #include     SGR=['35']   (品红)
+全部出现过的 SGR 组合数 = 5
+PASS  关键字/字符串/注释/数字 四类属性两两不同
+```
+不是全同色,是真的五类分色。
+
+**结论:通过**
+
+---
+
+### 验收 3 — 一个快捷键调用系统编译器;编译错误可见并能跳到对应行号
+
+**我怎么验的**
+生成错误分别落在**第 3 / 7 / 12 / 20 / 31 行**的五个文件(每个先用宿主 `c++ -fsyntax-only`
+确认编译器自己确实把错报在该行,否则跳过 —— 避免断言的是编译器而不是编辑器)。
+pty 里 `Ctrl-B` 编译 → 断言面板出现 `errN.cpp:N:` 形态的诊断 → `Ctrl-N` 跳诊断 →
+`Esc` 把焦点交回编辑区 → 在光标处敲 `ZZHERE` → `Ctrl-O` 存盘 →
+**读磁盘看 `ZZHERE` 落在第几行**(文件系统断言,不看屏幕)。
+
+**证据**(`audit-build-run-mode.sh`,15/15 通过)
+```
+PASS  编译错误可见:第 3 行的诊断出现在【编译】面板
+PASS  跳行生效:Ctrl-N 后光标真的落在第 3 行(ZZHERE 落在该行)
+PASS  … 第 7 行 …    PASS  跳行生效:第 7 行
+PASS  … 第 12 行 …   PASS  跳行生效:第 12 行
+PASS  … 第 20 行 …   PASS  跳行生效:第 20 行
+PASS  … 第 31 行 …   PASS  跳行生效:第 31 行
+```
+五个不同行号全部命中,不是只测了一个。
+
+**结论:通过**
+
+---
+
+### 验收 4 — 编辑器内运行编译产物,喂 stdin,看到 stdout 与退出码
+
+**我怎么验的**
+写一个读 stdin 求和、打印 `SUM=<和>`、`return 3` 的程序。两条路各走一次:
+(a) `Alt-4` 聚焦【输入】面板敲 `11 22 33` → `Esc` → `Ctrl-E` 编译并运行;
+(b) 配置 `stdin_file` 指向一个含 `100/200/300` 的文件,直接 `Ctrl-E`。
+
+**证据**
+```
+PASS  【输入】面板喂 stdin:看到正确 stdout(SUM=66)
+PASS  退出码 3 在面板里可见
+PASS  stdin_file 配置项生效(SUM=600)
+PASS  stdin_file 路径下退出码 3 也可见
+```
+两条 stdin 通路都实测通过,退出码 3 两次都可见。
+
+**结论:通过**
+
+---
+
+### 验收 5 — 可见的模式开关,当前模式一眼可见
+
+**我怎么验的**
+pty 里断言初始出现「练习模式」→ `mark` → `Ctrl-T` → 断言 mark 之后出现「写代码模式」→
+再 `mark` → `Ctrl-T` → 断言又出现「练习模式」。用 `mark`/`expectfrom` 保证断言的是
+**切换之后**新画出来的字,而不是历史残留。
+
+**证据**
+```
+PASS  模式标识可见且 Ctrl-T 切换后确实改变(练习模式 <-> 写代码模式)
+```
+另外从屏幕 dump 里确认,状态栏同时有三处体现模式:
+最左的模式徽章、右侧 `… │ AI 就绪` 区、以及切换时的中文状态消息。
+
+**结论:通过**
+
+---
+
+### 验收 6 — 写代码模式:停顿后自动请求,灰色 ghost text,Tab 接受、Esc 丢弃
+
+> 这是本次审计投入最大的一项。**用自写的本地假 SSE 端点走完了全链路**,不是代码评审。
+
+**我怎么验的**
+1. 代码审计自动触发条件与可配置性。
+2. 起 `audit-fake-ai-server.py` 假冒 OpenAI 兼容 SSE 端点,`base_url` 指向 `127.0.0.1`,
+   `api_key` 填假值,端点吐出可识别的补全 `GHOSTMARK_Alpha();\n    GHOSTMARK_Beta();`。
+3. pty 里真走:切模式 → 敲一个字符 → 停顿 → 自动请求 → ghost 上屏 → Tab 接受 → 存盘 → 读磁盘。
+4. 另一条:同样流程但按 Esc → 断言磁盘无 AI 文本、且 `Ctrl-L` 重绘后 ghost 不再出现在屏幕上。
+
+**证据**(`audit-ai-modes.sh`,16/16 通过)
+
+(a) 触发条件与停顿时长可配置(`src/ai.cpp:203-215`):
+```cpp
+if (!enabled()) return;
+if (mode() != AiMode::Code) return;        // 练习模式没有自动补全
+if (in_flight_.load()) return;
+if (now - last_activity_ms_ < cfg_.ghost_delay_ms) return;
+if (now - last_auto_request_ms_ < cfg_.ghost_min_interval_ms) return;
+if (!b.hasNonBlank()) return;
+```
+`src/config.h:31` → `int ghost_delay_ms = 500;` —— **默认就是 ~500ms**,且 `config.cpp` 有解析,可配置。
+```
+PASS  src/config.h 里 ghost_delay_ms 默认值 = 500
+PASS  ghost_delay_ms 可由配置文件覆盖
+```
+
+(b) 停顿后**自动**请求(全程没按任何 AI 快捷键):
+```
+PASS  停顿后自动向端点发起了请求(新增 1 条,全程未按 Ctrl-A)
+PASS  返回内容以 ghost 形式显示在屏幕上
+```
+假服务器的请求日志证实:`Authorization: Bearer FAKEKEY_AUDIT`、`"model":"audit-model-xyz"`。
+
+(c) 是**灰色**的:从原始 ANSI 流里分段比对 ——
+```
+ghost SGR = ['90']   正文 SGR = ['0', '33', '35']
+PASS  ghost 的终端属性与正文不同(独立配色/暗色)
+```
+`SGR 90` = bright black = 灰。与 `src/ui.cpp:430` 的 `if (d.pair == P_Ghost && colors >= 256) fg = 8;` 一致。
+
+(d) Tab 接受 —— **磁盘证据**:
+```
+PASS  Tab 接受 -> AI 文本进缓冲区并存盘
+```
+存盘后文件首行确为 ` zGHOSTMARK_Alpha();` + 次行 `    GHOSTMARK_Beta();`。
+
+(e) Esc 丢弃 —— 磁盘 + 屏幕双证据:
+```
+PASS  Esc 丢弃 -> 缓冲区无 AI 文本
+PASS  Esc 之后 ghost 从屏幕上消失(mark 之后强制重绘,GHOSTMARK 不再出现)
+```
+
+(f) 停顿时长真的在起作用:`ghost_delay_ms=30000` 时整段脚本内 0 请求。
+```
+PASS  ghost_delay_ms=30000 时全程没有发出请求(延时可配置且真的生效)
+```
+补充单独探针:`ghost_delay_ms=5000`,切到写代码模式后只等 1.5s 不打字 → 服务端收到 **0** 次请求,
+证明 `setMode()` 会重置 `last_activity_ms_`(`src/ai.cpp:156-164`),不存在"切模式即刻开炮"。
+
+**结论:通过**(端到端,不是纸面推演)
+
+---
+
+### 验收 7 — 练习模式:同一 AI 入口不插码;只在独立面板输出中文思路;Tab 不接受 AI 内容
+
+> 同样用本地假端点走完全程,而且**故意让端点违规**:回复里塞一整段带 ``` 围栏的完整代码。
+
+**我怎么验的**
+1. 假端点 `/practice` 返回:中文思路 + ```cpp 完整函数 PRACTICE_LEAK_CODE ``` + 中文下一步 + 思维链。
+2. 练习模式下 `Ctrl-A` → 面板打开提问输入行 → 输入问题 → 回车 → 等回复。
+3. 断言:缓冲区 **sha256 逐字节未变**;回复只出现在面板;连按 3 次 Tab 后只有缩进。
+4. 边界加测:**写代码模式先拿到一个活的 ghost,再 `Ctrl-T` 切到练习模式,然后按 Tab**。
+5. 代码路径审计:确认这是结构性保证而不是散落的 if。
+
+**证据**(`audit-ai-modes.sh`)
+```
+PASS  缓冲区逐字节未变(sha256 相同)
+      before = 8969a45a948095d3fca8b5cf8daf3f721651955e9f56611139914e682db6139f
+      after  = 8969a45a948095d3fca8b5cf8daf3f721651955e9f56611139914e682db6139f
+PASS  含代码的回复只出现在【AI】面板里(屏幕上能看到 PRACTICE_LEAK_CODE)
+PASS  面板输出的是中文思路提示(推理过程 / 复杂度 / 下一步 都在)
+PASS  Tab 未引入任何 AI 内容
+PASS  Tab 只产生缩进(首行被缩进 12 个空格 = 3 次 Tab × tab_width 4)
+PASS  带 ghost 切到练习模式后 ghost 作废,Tab 不接受任何 AI 内容
+PASS  练习模式 system prompt 含"不要给代码/只给思路"类约束
+      尾部原文:"… 4) 下一步该想什么。不超过 300 字。再次强调:不要输出任何可直接编译运行的代码。"
+```
+
+**是不是结构性保证?是。** 我按"AI 文本能不能到达 `TextBuffer::insert`"这条线独立追了一遍:
+
+1. **唯一决策点**:`AiService::sinkFor(mode)`(`src/ai.h:115-117`)在**请求创建时**把
+   `AiSink` 定死(`Practice → PanelOnly`),写进 `AiRequest`,再随每个 `AppEvent` 一路带回。
+   全仓 `sinkFor` 只有这一处定义、`ai.cpp:301` 一处调用。
+2. **唯一落地点**:`App::onAiDone` 里**一个** `switch (ev.sink)`(`src/app.cpp:583`)。
+   `GhostText` 分支才碰 `ed_.setGhost()`;`PanelOnly` 分支只往面板 append。
+   `onAiDelta`(`app.cpp:559`)刻意**不落地**,只累加到 `ai_stream_`。
+3. **唯一咽喉点**:`Editor::acceptGhost()`(`src/editor.cpp:679-696`)是 AI 文本到达
+   `TextBuffer::insert` 的唯一路径,开头四行 early-return:
+   ```cpp
+   if (!ghost_.complete)                 return false;
+   if (ghost_.text.empty())              return false;
+   if (ghost_.sink != AiSink::GhostText) return false;   // ★ 结构性拦截
+   if (ghost_.gen != expected_gen_)      return false;
+   ```
+   `setGhost()`(第 650 行)除 assert 外还有一条**运行期** early-return —— NDEBUG 下
+   assert 被裁掉后仍然拦得住,退化方向永远是"没有 ghost",不可能是"代码被插入"。
+4. **`doTab()`(`app.cpp:892-903`)里一行模式判断都没有** —— 它不需要,因为练习模式
+   永远拿不到 ghost。这正是"结构性"的含义:不靠记得处处判模式。
+
+我特意找过有没有第二条插入路径:`ai.cpp` / `aihttp.cpp` / `ui.cpp` 都不持有可写 `TextBuffer&`;
+`grep setGhost` 全仓只有 `app.cpp:596` 一个调用点。**没有旁路。**
+
+**结论:通过**
+
+---
+
+### 验收 8 — key 与模型 ID 从配置读;无硬编码;配置缺失时编辑/编译照常;不泄漏 key
+
+**我怎么验的**
+静态扫描 + 配置缺失实跑 + 灌一个独特假 key 后全面 grep。
+
+**证据**(`audit-config-key.sh`,14/14 通过)
+```
+PASS  源码里没有 sk-* / Bearer <literal> 形态的 key 字面量
+PASS  二进制里没有 sk-* 字符串
+PASS  配置缺失:编译 + 运行照常(看到程序 stdout NOCFG_RUN_OK)
+PASS  配置缺失:编辑 + 保存照常(磁盘有改动)
+PASS  配置缺失:退出码 7 仍然可见
+PASS  配置缺失时未崩溃
+PASS  配置缺失:界面上给出「AI 未配置」类提示
+PASS  --doctor 输出里没有 key 的值
+PASS  --print-config 输出里没有 key 的值
+PASS  环境变量注入的 key 未经 --doctor 泄漏
+PASS  AI 错误路径(401)屏幕与面板里都没有 key 的值
+PASS  401 时给出中文提示「API key 无效或已过期」
+PASS  服务端收到的 Authorization 正是配置里的 key(证明 key 来自配置)
+PASS  请求体里的 model 正是配置里的 audit-model-xyz(证明模型名来自配置)
+```
+用的独特假 key 是 `UNIQUEKEY_qX7vN2mZ8tR4wL9pJ3hB6sD1`,在 `--doctor` / `--print-config` /
+屏幕 dump / 原始 ANSI 流 四处 `grep -F` 均无命中。
+`--doctor` 只打印 `api_key : 已配置(已隐去)`。
+
+**一处需要协调者裁决的措辞问题**:需求原文是"代码里不出现任何硬编码 key 或**写死的模型名**"。
+`src/config.h:29` 有 `std::string model = "deepseek-chat";` —— 这是一个**默认占位值**。
+减轻因素:(a) 它可被配置/环境变量覆盖,实际请求用的一律是 `Config::model`
+(假端点收到的是我配的 `audit-model-xyz`,证明确实走配置);
+(b) 用户没改时 `config.cpp:336-337` 会主动 warn "model 当前是占位默认值…请按官方文档填写";
+(c) README 与 `config.sample.json` 都写明要自己填。
+严格按字面读是"代码里出现了一个写死的模型名";按意图读(模型 ID 从配置读取)是满足的。
+**我的判定:实质通过,措辞上留一个待裁决项**,见 §3 问题 3。
+
+**结论:通过**(model 占位值一项建议协调者明确裁决)
+
+---
+
+### 验收 9 — 网络失败/超时/API 报错时不崩、不卡死输入、有可见错误提示
+
+**我怎么验的**
+六种异常各走一次,每种都断言"有可见中文提示"+"没崩";
+另外两轮专门验"**请求在飞期间键盘仍然生效**"(文件系统断言:在飞时敲的字符必须能存进磁盘)。
+
+**证据**(`audit-net-failures.sh`,16/16 通过)
+
+| # | 场景 | 构造方式 | 屏幕上的中文提示 | 结果 |
+|---|---|---|---|---|
+| 1 | 不可路由地址 | `http://203.0.113.1:9`(RFC5737 保留段) | 「超时」 | PASS,未崩 |
+| 2 | 立即断连 | 本地端点收到请求即 `shutdown`+`close` | 「没有返回任何数据」 | PASS,未崩 |
+| 3 | HTTP 500 | 本地端点回 500 + OpenAI 风格错误体 | 「服务端错误」 | PASS,未崩 |
+| 4 | 畸形 JSON | SSE 帧里塞截断/非法 JSON | 有中文 AI 错误提示 | PASS,未崩 |
+| 4b | 完全非 JSON | 200 + `<html>` 正文 | 有中文 AI 错误提示 | PASS,未崩 |
+| 5 | 超慢响应 | 本地端点收到请求后长睡,`ai_timeout_ms=4000` | 「超时」 | PASS,未崩 |
+| 6 | 无效 key | 本地端点回 401 | 「API key 无效或已过期」 | PASS,未崩 |
+
+键盘存活:
+```
+PASS  [alive_slow]       在飞期间键盘输入仍然生效(敲的字符全部进了缓冲区并存盘)
+PASS  [alive_unroutable] 在飞期间键盘输入仍然生效(敲的字符全部进了缓冲区并存盘)
+```
+补充观察:在飞期间状态栏持续显示「AI 思考中…」,同时按键逐字上屏 —— UI 线程没有被网络阻塞。
+架构上也对得上:worker 是独立线程,UI 线程只用 `tryPop` 从不阻塞(`src/ai.h:8-11`)。
+
+**结论:通过**
+
+---
+
+### 验收 10 — README
+
+**我怎么验的**
+(a) README 提到的 6 个 make 目标逐个核对 Makefile;
+(b) README 写的默认配置路径 vs 程序 `--help` 实际输出;
+(c) `--print-config` 的每个字段 vs README §2.3 字段全表(双向核对);
+(d) **在 pty 里真按 18 个快捷键**,每个都断言可观测行为。
+
+**证据**(`audit-readme-keys.sh`,**28/28 通过**)
+```
+PASS  Makefile 有 README 提到的目标 all / check-headers / tests / debug / clean / install(6/6)
+PASS  README 写的默认路径(~/.config/cppide/config.json)与程序输出(/root/.config/cppide/config.json)同构
+PASS  --print-config 输出的每个字段 README 都有记载
+PASS  README 字段表里没有程序不认识的字段
+
+PASS  Ctrl-O 保存                      (磁盘断言)
+PASS  Ctrl-X 退出                      (子进程退出码 0)
+PASS  Ctrl-X 有未保存修改时给出 y/n/s 确认
+PASS  确认框里 Enter 不等于确认,编辑器仍存活   (磁盘断言,README 4.3 的强承诺属实)
+PASS  Ctrl-B 编译前自动保存脏缓冲区     (磁盘断言)
+PASS  Ctrl-B 触发编译且面板有反馈
+PASS  Ctrl-R 运行 / PASS 显示退出码 5
+PASS  Ctrl-E 编译并运行
+PASS  Ctrl-T 切换 AI 模式
+PASS  Ctrl-G 跳到行号(落在第 3 行,磁盘断言)
+PASS  Ctrl-F 打开查找输入行
+PASS  F1 打开帮助浮层
+PASS  Ctrl-U 撤销 / PASS Ctrl-W 重做   (磁盘断言)
+PASS  Ctrl-K 剪切当前行                (磁盘断言)
+PASS  Ctrl-D 复制 + Ctrl-V 粘贴行      (磁盘断言,#include 出现 2 次)
+PASS  Alt-1/2/3/4 聚焦面板
+PASS  Alt-0 折叠面板区
+```
+抽查的快捷键数 = **18 个**(要求至少 10 个)。README §4.3 那条最容易写错的强承诺
+(「`Enter` 不等于确认」)也实测属实。
+
+README 对 macOS 未验证一事有**主动的诚实声明**(§1.1 引用块),没有夸大。
+
+**一处 README 与实测行为的落差**(不影响本条通过,但建议补):README §5.2 描述了
+`ghost_delay_ms` / `ghost_min_interval_ms`,把后者注为"省钱",但**没有说明光标停着不动时
+自动请求会一直重复下去**。见 §3 问题 1。
+
+**结论:通过**
+
+---
+
+## 2. 边界合规(11 条)
+
+用修正过的 ERE 全仓扫 `src/*.cpp src/*.h Makefile`(第一遍我把 `\|` 写进了 `grep -E`,
+那是字面竖线不是"或",全部返回 0 是假阴性;下表是**修正后**重跑的结果)。
+
+| # | 边界 | 扫描 | 结果 |
+|---|---|---|---|
+| 1 | 只支持 C/C++,不做其他语言 | 扩展名白名单 + 实跑 | ✅ 未越界。`cppide t.py` → 「不支持的文件类型」,退出码 2 |
+| 2 | 只跑 macOS 终端,不做 GUI/网页 | 无 GUI/HTTP server 代码 | ✅ 未越界(Linux 上能跑属于开发环境,README 已声明不是交付目标) |
+| 3 | 不做 neovim / VSCode 插件 | 无插件清单/manifest | ✅ 未越界 |
+| 4 | 不做 LSP | `clangd\|lsp\|languageserver\|textdocument\|didopen` | ✅ **0 处** |
+| 5 | 不做跨文件索引 | `ctags\|cscope\|跨文件\|symbol.*index\|全局索引` | ✅ **0 处** |
+| 6 | 不做重构 | `refactor\|重构\|rename.*symbol` | ✅ **0 处** |
+| 7 | 不做调试器集成 | `gdb\|lldb\|breakpoint\|debugger\|ptrace` | ✅ 2 处命中**都是注释里声明"不做"**(`aihttp.cpp:686`、`proc.cpp:222`),无实现 |
+| 8 | 不做 Git 集成 | `libgit\|git2\|git (diff\|commit\|status\|add)\|\.git/` | ✅ **0 处** |
+| 9 | 不做多文件工程 / CMake / Makefile 构建 | `cmake\|cmakelists\|多文件工程` | ✅ **0 处**。`build.cpp` 只对当前单文件装配一条命令 |
+| 10 | 不做题库抓取 / OJ 对接 / 自动提交 | `codeforces\|luogu\|洛谷\|atcoder\|题库\|自动提交` | ✅ **0 处** |
+| 11 | 不代买 key、不绕过计费或鉴权 | `bypass\|绕过\|计费\|billing.*skip\|proxy.*key\|steal` | ✅ **0 处**。key 只走 `Authorization: Bearer`,无任何代理/白嫖路径 |
+| 附 | 不做打包分发(brew formula/签名/安装器) | `codesign\|pkgbuild\|\.dmg\|\.pkg\|formula\|installer` | ✅ **0 处** |
+| 附 | 不实现完整 vim 键位体系 | 键表审阅 | ✅ 未越界。键位是 nano/emacs 风格,无模式化编辑、无宏/寄存器/ex 命令 |
+| 附 | 不做持久化(关掉即清空) | 扫写文件路径 | ✅ 未越界。除用户文件与 `/tmp` 编译产物外不写任何历史/会话文件 |
+
+**两个需要说明但我判定为未越界的点:**
+- `Makefile:26` 有 `brew --prefix ncurses` —— 这只是 macOS 上找 Homebrew 版 ncurses 的**头/库搜索路径**,
+  不是"提供 brew formula"。属于编译依赖发现,不是打包分发。
+- `Makefile:75-77` 有 `install:` 目标,内容是 `install -m 0755 cppide $(PREFIX)/bin/`。
+  这是一条裸的拷贝规则,不是 formula / 签名 / 安装器。**建议协调者过目确认**,我倾向于不算越界。
+
+**结论:11 条边界全部未越界。**
+
+---
+
+## 3. 本次审计新发现的问题(按严重度排序)
+
+### 问题 1 【P1 · 花钱】写代码模式空转会无限重复发请求
+
+**位置**:`src/ai.cpp:203-215`(`AiService::maybeAutoTrigger`),调用点 `src/app.cpp:189`(每 tick 一次)
+
+**现象**:切到写代码模式、敲一个字符之后**完全不碰键盘**,请求不会停。
+
+**实测**(`audit-idle-cost.sh`,全默认配置):
+```
+配置:全默认(ghost_delay_ms=500,ghost_min_interval_ms=1200)
+操作:切到写代码模式 -> 敲 1 个字符 -> 之后 20 秒完全不碰键盘
+结果:服务端收到 23 次 chat/completions 请求
+折算:约 69 次/分钟,约 4140 次/小时
+```
+
+**根因**:`maybeAutoTrigger` 只有两个**时间**阈值:
+```cpp
+if (now - last_activity_ms_      < cfg_.ghost_delay_ms)        return;
+if (now - last_auto_request_ms_  < cfg_.ghost_min_interval_ms) return;
+```
+`last_activity_ms_` 只在 `noteActivity()` / `setMode()` 里更新。用户不动键盘时它就不再前进,
+于是第一个条件**永远满足**;第二个条件每过 `ghost_min_interval_ms` 就再次满足。
+缺的是一个"**本次停顿已经请求过了**"的状态位(或"已有 ghost 就不再请求"的判断)。
+
+**影响面**:ICPC 训练场景下,把编辑器挂在写代码模式去想题、去吃饭、切到别的窗口,
+都会持续计费。这是需求"省钱"意图(`ghost_min_interval_ms` 的注释与 README §5.2 都写了"省钱")
+**没有真正达成**的地方 —— 它只限了频率,没有限总量。
+
+**为什么我没有直接改**:最小修法要在 `AiService` 里加一个状态位(如
+`std::atomic<bool> auto_done_since_activity_`),`noteActivity()`/`setMode()` 里清零、
+`maybeAutoTrigger()` 里置位并判断。这要动 `src/ai.h` —— 而 `.flower/notes/跨模块约定.md §0`
+明确规定 **`src/*.h` 已冻结,任何字段变更必须由协调者统一改**。故只报告,不动手。
+
+**建议**:约 4 行改动(1 个成员 + 2 处清零 + 1 处判断),由协调者裁决后落地。
+同时建议 README §5.2 把这个行为写清楚。
+
+---
+
+### 问题 2 【P2 · 构建】`make debug -j<N>` 存在竞态,会间歇性链接失败
+
+**位置**:`Makefile:70-72`
+```make
+debug: CXXFLAGS += -O0 -g -fsanitize=address,undefined
+debug: LDFLAGS  += -fsanitize=address,undefined
+debug: clean all
+```
+
+**现象**:`clean` 和 `all` 是**两个平级的先决条件**,GNU Make 在 `-j` 下可以并发执行它们。
+于是 `clean` 会在 `all` 已经编出一部分 `.o` 之后把它们删掉,链接阶段报文件不存在。
+
+**实测**(本次审计真踩到):
+```
+$ make debug -j4
+g++ … -c -o src/aihttp.o src/aihttp.cpp      # 注意:ai.o 从头到尾没被编译
+…
+g++ -fsanitize=… -o cppide src/ai.o src/aihttp.o …
+/usr/bin/ld: cannot find src/ai.o: No such file or directory
+collect2: error: ld returned 1 exit status
+make: *** [Makefile:51: cppide] Error 1
+```
+**是竞态不是必现**:同一条命令重跑一次就过了(`make debug -j4` → `exit=0`)。
+串行 `make debug` 稳定成功。
+
+**影响面**:任何人用 `make debug -j` 跑 sanitizer 验证时,会随机撞到一次假的"编译失败",
+而且失败形态(`cannot find src/ai.o`)极具误导性 —— 看起来像源码/依赖出了问题。
+**更糟的是它会把 `./cppide` 删掉**,如果此时有别的验收脚本正在用这个二进制,会被连带打挂
+(本次审计就发生了:README 快捷键那一轮因此整轮作废,重跑才拿到结果)。
+
+**建议修法**(递归 make,保证顺序):
+```make
+debug:
+	$(MAKE) clean
+	$(MAKE) CXXFLAGS="$(CXXFLAGS) -O0 -g -fsanitize=address,undefined" \
+	        LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined" $(BIN)
+```
+**为什么我没有直接改**:这改变了 `debug` 目标的实现方式(目标特定变量 → 递归 make),
+属于构建系统的结构性改动,且 Makefile 由协调者统一维护。只报告。
+临时规避:`make debug` 不加 `-j`。
+
+---
+
+### 问题 3 【P3 · 措辞/裁决】`src/config.h:29` 有写死的默认模型名
+
+`std::string model = "deepseek-chat";`
+
+需求原文:"代码里不出现任何硬编码 key 或**写死的模型名**"。这是一个占位默认值,
+可被配置与环境变量覆盖,且未改时程序会主动 warn。实质意图(模型 ID 从配置读)已满足,
+但字面上确实"代码里出现了一个模型名"。**建议协调者明确裁决**:
+要么接受现状(并在需求确认书上注明"允许占位默认值"),
+要么把默认值改成空串 + 未配置时明确报错(代价:开箱即用性下降)。
+
+---
+
+### 问题 4 【P3 · 细节】8 色终端上 ghost 不是灰色
+
+`src/ui.cpp:388` 把 `P_Ghost` 定为 `COLOR_BLUE`,只有在 `colors >= 256` 时才
+改写成灰色 8(`ui.cpp:430`);单色终端退化为 `A_DIM`。
+需求写的是"灰色 ghost text"。macOS Terminal.app / iTerm2 默认都是 256 色,
+**交付目标平台上是灰色**,所以实际影响很小。仅作记录。
+
+---
+
+### 问题 5 【P4 · 工具坑】pty 驱动器的 `raw_out` 参数名误导
+
+`wave5-pty-drive.cpp:592-595` 把**过滤后的文本**写进 `<raw_out>`,真正的原始字节流写进
+`<raw_out>.raw`。参数名叫 `raw_out` 但内容不 raw,极易让后续审计者拿错文件、
+得出"没有颜色/没有高亮"的假结论(我第一次就中了)。建议改名或在用法说明里点明。
+
+---
+
+## 4. 之前 agent 报告里的矛盾 / 夸大 / 过期(共 4 处)
+
+**总体评价:诚实度高,没有发现"声称测过但其实没测"的情况。** 相反,几份报告主动写明了
+自己没有证据的地方。以下 4 处是"陈旧"或"断言偏弱",不是造假。
+
+1. **`wave4-app.md:221-223` 的自认缺口是准确的,而且到本次审计前一直没被补上**:
+   > 「**真机 AI 链路未验证**(不联网、且绝不使用真实 key),`AiStarted/AiDelta/AiDone/AiError`
+   > 四条路径只做了编译期与逻辑评审,**没有端到端证据**。」
+
+   这条**属实且重要** —— 验收 6/7 的端到端证据在本次审计之前是**空缺**的。
+   本报告 §1 的验收 6/7 用本地假 SSE 端点第一次把这个洞补上了。
+   这不算夸大,反而是之前 agent 诚实的地方,但**交付前必须有人真的去补**,而不是留在风险清单里。
+
+2. **`wave4-app.md:221` 描述的实现已过期**:它写 `AiDone` 的载荷约定是
+   `full = ev.text.size() >= ai_stream_.size() ? ev.text : ai_stream_`,
+   而当前 `src/app.cpp:579` 已经是 `const std::string& full = ev.text;`(纯替换语义)。
+   改动在 `wave5-polish.md:53-54` 有交代,但 `wave4-app.md` 本身没有标注作废。
+   照着 wave4 报告去理解代码会得到错的结论。
+
+3. **`wave4-app.md:224-225` 同样过期**:它写「`Esc` 只在【运行】面板终止子进程,
+   编译作业卡住时…**没有给编译面板同样的逃生口**」。
+   当前 `src/app.cpp:929` 及 README §4.5 都明确:**编译在飞时任何焦点下 Esc 都能终止**。
+   Wave 5 改了行为但 wave4 报告没标作废。
+
+4. **`wave5-b4-ai-states.sh:114` 的断言偏弱(近乎同义反复)**:
+   它把期望消息整串按空白切成多个片段分别 grep,例如
+   `run_case nonet "AI 错误 请求超时"` 实际是分别断言 `AI`、`错误`、`请求超时` 三个子串。
+   前两个在任何一屏 cppide 界面上都必然出现(状态栏常驻 `AI` 字样),
+   所以真正有鉴别力的只有第三个。这会让"通过 3 条"看起来比实际证据强。
+   不是假阳性(第三个片段是真断言),但**统计口径偏乐观**。
+
+**关于"跳过即通过"的专项检查**:我抽查了 `wave5-verify.sh`、`wave5-finalfix-verify.sh`、
+`wave5-b4-ai-states.sh`、`wave5-readme-verify.sh`、`wave4-app-verify.sh`。
+它们的 skip 分支(需要 root 的只读文件测试、`core_pattern` 不合适、ASan 二进制不存在等)
+**都是打印「跳过」而不是打印 PASS**,`fails` 计数器也不会被加 —— **没有把跳过伪装成通过**。
+`wave5-verify.sh:236` 甚至有一段注释,主动记录了曾经存在过的一个"永远 PASS 的假断言"并说明已修。
+这一点值得肯定。
+
+---
+
+## 5. 回归结果(验收 12)
+
+| 项目 | 命令 | 结果 |
+|---|---|---|
+| 头文件自给自足 | `make check-headers` | ✅ `OK (15 个头文件)` |
+| 全量重建 | `make clean && make -j4` | ✅ `exit=0`,**warning 0 条**,error 0 条 |
+| 单元测试 | `make tests` | ✅ 全部通过(16 个 `test_*.cpp`),`exit=0`。含 `test_ui` 833,467 个断言、`test_util` 267,024 个断言 |
+| Sanitizer 冒烟 | `make debug` + `audit-asan-smoke.sh` | ✅ **15/15 通过,ASan/UBSan/LSan 零报告** |
+
+ASan/UBSan 下真跑过的 11 个场景(每个都在 pty 里、开 `detect_leaks=1`):
+编辑+保存+撤销重做、编译错误+双向跳诊断、【输入】面板喂 stdin 运行、
+**AI ghost Tab 接受**、**AI ghost Esc 丢弃**、**练习模式收含代码块的回复**、
+面板轮换+`Alt-0` 折叠+F1 浮层+**60 次 20x5↔200x60 缩放风暴**、
+AI 网络错误三态(500 / 秒断连 / 畸形 JSON)。
+
+**没有发现内存泄漏、越界、UB 或竞态报告。**
+
+---
+
+## 6. macOS 未验证的影响面(已知最大风险)
+
+这是**唯一一个我无法用证据消除的风险**,必须在交付前由持有 mac 的人处理。
+本审计全部在 Debian aarch64 上完成,**macOS 上一次都没跑过**。具体影响面:
+
+| 面 | 风险 | 后果 | 现有兜底 |
+|---|---|---|---|
+| **编译** | Apple 自带 ncurses(5.7 系)的头可能不给出宽字符原型(`get_wch`/`add_wch`/`cchar_t`) | `make` 直接编不过 | Makefile:34 已备好注释掉的 `-D_XOPEN_SOURCE_EXTENDED`,README §9 有修法 |
+| **链接** | Darwin 分支链 `-lncurses`(不是 `-lncursesw`);若装了 Homebrew ncurses 则走 brew 路径 | 中文宽度算错 / 链接失败 | Makefile 已分支处理,但**未实测** |
+| **键码** | `Shift-Home`/`Shift-End` 用的 `KEY_S*` 常量、`define_key` 在 Apple ncurses 上行为未验证 | 个别快捷键失灵 | README §9 给了改 `kNcS*` 常量的修法 |
+| **F 键** | Terminal.app 的 `kf1` 可能是 `\E[11~` 而不是 `\EOP` | F1 打不开帮助 | Ctrl 组合是主键位,F 键只是别名,**不影响主流程** |
+| **Alt 键** | Terminal.app 需勾选「Option 作为 Meta」 | `Alt-1..4`/`Alt-0` 失灵 | README §4.9 有说明 |
+| **core 限制** | `setrlimit(RLIMIT_CORE)` 在 macOS 上语义略有差异 | 崩溃时可能留 core | 无实测证据 |
+
+**我的判断**:这些都是**局部、有兜底、有文档修法**的风险,不是架构性风险 ——
+核心逻辑(编辑/编译/运行/AI 三态/模式隔离)不含平台相关分支。
+但"能不能编过、键位对不对"这两件事,**只有在真机上跑一次才能知道**,
+任何代码评审都替代不了。
+
+---
+
+## 7. 总评与交付前必做
+
+### 9 条验收标准
+
+| # | 验收标准 | 结论 |
+|---|---|---|
+| 1 | 独立可执行文件,不依赖 vim/neovim/VSCode | **通过** |
+| 2 | 打开/编辑/保存 4 种扩展名 + 语法高亮 | **通过** |
+| 3 | 一键编译,错误可见并跳行 | **通过**(5 个不同行号) |
+| 4 | 运行编译产物,喂 stdin,看 stdout 与退出码 | **通过**(面板 + stdin_file 两条路) |
+| 5 | 可见的模式开关 | **通过** |
+| 6 | 写代码模式:停顿自动请求 + 灰色 ghost + Tab/Esc | **通过**(本地假端点端到端) |
+| 7 | 练习模式:不插码 / 只出面板 / Tab 不接受 | **通过**(结构性保证,已独立追证) |
+| 8 | key 与模型从配置读、缺配置不崩、不泄漏 key | **通过**(model 占位值留一个待裁决措辞项) |
+| 9 | 网络异常不崩、不卡输入、有可见提示 | **通过**(6 种异常 + 在飞期间键盘存活) |
+| 10 | README | **通过**(28/28,抽查 18 个快捷键) |
+
+**11 条边界:全部未越界。**
+
+### 交付前必须做的事
+
+1. **【必做】在真 mac 上跑一次** —— `make` 能否编过、`make tests`、`./cppide --doctor`、
+   以及 §6 表格里那几个键位。这是唯一无法在本环境消除的风险。
+2. **【强烈建议】裁决并修掉问题 1(空转烧钱)** —— 这条直接花用户的钱,
+   而且与需求里"省钱"的意图相悖。约 4 行改动,但要动冻结的 `src/ai.h`,需协调者点头。
+3. **【建议】修掉问题 2(`make debug -j` 竞态)** —— 不影响交付物本身,
+   但会持续污染后续任何人的验证结果,且失败形态极具误导性。
+4. **【建议】给问题 3(占位模型名)一个明确裁决**,并在需求确认书上留痕。
+5. **【建议】把 `wave4-app.md` 里已被 Wave 5 推翻的两处(§4 的第 2、3 条)标注作废**,
+   避免后续维护者照着过期文档理解代码。
+
+### 审计员的总体判断
+
+代码质量与工程纪律**明显高于平均水平**:零 warning、ASan/UBSan/LSan 全净、
+`make check-headers` 这种自给自足门、"练习模式不插码"做成了真正的结构性保证
+(唯一 sink 决策点 + 唯一 switch + 唯一咽喉点,而不是散落的 if)、
+key 全链路脱敏、错误文案全中文且分类细致。之前 agent 的报告诚实,
+主动标注了自己没有证据的地方 —— 而验收 6/7 的端到端空缺,本次审计已用本地假端点补齐。
+
+需求的 9 条验收标准与 11 条边界**全部达成**。
+交付前唯一的硬门槛是 macOS 真机验证;唯一值得在交付前修的功能性问题是"空转烧钱"。

@@ -1,0 +1,147 @@
+# cppide 实现架构设计
+
+> 依据:`.flower/notes/需求.md`(冻结)。本文件是实现期的唯一接口权威。
+> 头文件在 Wave 1 冻结,之后任何签名变更必须由协调者统一改。
+
+## 0. 技术决策摘要
+
+| 项 | 决策 | 理由 |
+|---|---|---|
+| 语言 | C++17 | macOS 自带工具链可直接编译 |
+| 渲染 | ncurses(宽字符)| 系统自带;AI 面板要显示中文,必须走 `wget_wch`/`waddnwstr` |
+| HTTP | libcurl | macOS 自带 |
+| JSON | 自写 `src/json.{h,cpp}` | 不联网下载、不引外部依赖 |
+| 构建 | 手写 Makefile | 不引 CMake |
+| 平台 API | 仅 POSIX + ncurses + libcurl | 无 macOS 独有 API,可在 Linux 容器编译验证 |
+| 可执行名 | `cppide` | `icpc` 会与 Intel 编译器冲突,`cpp` 是预处理器;`cppide` 无冲突 |
+| 选区 | **不做** | 需求未要求;终端自身的鼠标选择 + Cmd-C 已够。改为行级操作(剪切行/粘贴行/复制行) |
+| 子进程 | `fork`+`execvp`+`poll`,**绝不用 popen/system** | 需要 pid(超时 kill)、双向管道、stdout/stderr 分离、退出状态、不经过 `/bin/sh` |
+
+> 开发期注意:Linux 容器需先 `apt-get install build-essential libncursesw5-dev libcurl4-openssl-dev`。
+
+---
+
+## 1. 文件划分
+
+```
+Makefile
+README.md
+src/
+  main.cpp        90    进程入口:locale / SIGPIPE / curl global / endwin 安全网 / argv
+  app.h  150      AppModel + App 类声明
+  app.cpp 570     主循环、按键分派、事件排空、编译/运行/AI 编排
+  ui.h   140      Ui 渲染器声明 + Theme
+  ui.cpp 570      ncurses 初始化与全部绘制(编辑区/行号/ghost/面板/状态栏/提示行/帮助)
+  editor.h 180    Editor:光标、视口、编辑操作、Ghost
+  editor.cpp 540
+  textbuf.h 150   TextBuffer:行数组 + 撤销
+  textbuf.cpp 430
+  highlight.h 90  Highlighter(纯函数)+ HighlightCache(行首状态缓存)
+  highlight.cpp 400
+  panel.h 120     Panel(输出面板)+ StdinBuffer
+  panel.cpp 300
+  proc.h 130      ProcSpec / ProcResult / runProcess / Runner(后台线程)
+  proc.cpp 420
+  build.h 130     Diag / Builder:命令装配 + 诊断解析
+  build.cpp 380
+  aihttp.h 100    ChatRequest / ChatResponse / HttpChat / SseParser
+  aihttp.cpp 380
+  ai.h   160      AiMode / AiSink / AiRequest / AiService
+  ai.cpp 430
+  config.h 120    Config + ConfigLoader
+  config.cpp 270
+  json.h 130      mj::Value 声明
+  json.cpp 420    极简 JSON 实现
+  mailbox.h 140   Mailbox<T> 线程安全队列(header-only)
+  keys.h 130      Action 枚举 + 绑定表 + Ctrl()/Alt()
+  keys.cpp 190
+  util.h 90 / util.cpp 230   字符串/路径/文件/时间/UTF-8
+tests/
+  test_json.cpp test_highlight.cpp test_diag.cpp test_sse.cpp test_proc.cpp  ~300
+```
+
+模块依赖(单向,无环):
+
+```
+main -> app -> {ui, editor, panel, ai, build, proc, config, keys}
+ui   -> {editor, panel, highlight, keys, util, app.h(仅 AppModel)}
+ai   -> {aihttp, config, textbuf, mailbox, json}
+build-> {proc, config, util}
+editor->{textbuf, highlight, util, ai.h(仅 AiSink 枚举)}
+aihttp->{json, config, util}
+config->{json, util}
+textbuf/highlight/panel/proc/json/util -> 仅 util 或无依赖
+```
+
+`json.h` 拆成 `.h`+`.cpp`(而非纯 header-only)是为了让 Wave 2 的多个 agent 能并行、且不拖慢每个 TU 的编译;"不引外部依赖"的要求仍然满足。
+
+---
+
+## 2. 核心数据结构
+=== 5.6 ===
+### 5.6 HTTP 层
+
+```cpp
+struct ChatMessage { std::string role, content; };
+
+struct ChatRequest {
+  std::string url, api_key, model;
+  std::vector<ChatMessage> messages;
+  double temperature = 0.2;
+  int    max_tokens  = 256;
+  bool   stream      = true;
+  int    connect_timeout_ms = 5000;
+  int    total_timeout_ms   = 20000;
+  std::vector<std::string> stop;
+  std::string toJson() const;                  // 用 mj::Value 生成,自动转义
+};
+
+using ChatDeltaFn  = std::function<bool(const std::string& delta)>;  // 返回 false 中止
+using ChatCancelFn = std::function<bool()>;                          // 由 curl 进度回调轮询
+
+struct ChatResponse {
+  bool ok = false;
+  std::string text;              // 拼接后的完整内容
+  std::string error;             // 中文,面向用户
+  long http_status = 0;
+  bool canceled = false, timed_out = false;
+  int64_t elapsed_ms = 0;
+  int prompt_tokens = 0, completion_tokens = 0;
+};
+
+class HttpChat {                 // 每线程一个实例,复用同一个 CURL* 句柄
+public:
+  HttpChat(); ~HttpChat();
+  static void globalInit();      // curl_global_init,必须在任何线程启动前于 main 调用
+  static void globalCleanup();
+  ChatResponse send(const ChatRequest& req,
+                    const ChatDeltaFn& on_delta,
+                    const ChatCancelFn& should_cancel);
+private:
+  void* curl_ = nullptr;         // CURL*,保持 void* 以免头文件引 curl.h
+  std::string sse_carry_;
+};
+
+class SseParser {                // 纯函数式,可单测
+public:
+  void feed(const char* p, size_t n,
+            const std::function<void(const std::string& payload)>& cb);
+  void reset();
+};
+```
+
+必须设置的 curl 选项(逐条都有理由):
+- `CURLOPT_NOSIGNAL = 1L` —— **多线程程序里是强制的**。否则 curl 的 DNS 超时走 `SIGALRM` + `siglongjmp`,在非主线程上会破坏状态甚至崩溃。
+- `CURLOPT_TIMEOUT_MS`、`CURLOPT_CONNECTTIMEOUT_MS`、`CURLOPT_LOW_SPEED_LIMIT=1` / `CURLOPT_LOW_SPEED_TIME=10`(卡死的流会自己死掉)。
+- `CURLOPT_NOPROGRESS = 0` + `CURLOPT_XFERINFOFUNCTION` → 回调里查 `should_cancel()`,非 0 返回即刻中止。这是"用户继续打字 → 请求立即作废"的实现点。
+- `CURLOPT_HTTPHEADER`:`Authorization: Bearer <key>`、`Content-Type: application/json`、流式时 `Accept: text/event-stream`。
+- `CURLOPT_VERBOSE` 恒为 0。**API key 绝不出现在面板、日志、错误消息里**。
+- SSE 解析:帧为 `data: {json}\n\n`,结束为 `data: [DONE]`;取 `choices[0].delta.content`。DeepSeek 若返回 `reasoning_content`,**只在练习模式追加**,写代码模式丢弃(思维链不该被当成代码插入)。
+- 非流式回退(`cfg.stream == false`):取 `choices[0].message.content`。
+- 兼容性兜底:HTTP 4xx 时 body 往往是普通 JSON 错误对象而非 SSE;按首字节是 `{` 或 content-type 判定,走错误路径解析 `error.message`。
+- 解析不出来时,把 body 前 200 字节(**去掉 key**)追加到 AI 面板,便于在没有调试器的情况下诊断协议不匹配。
+- 错误文案:401 → "API key 无效或已过期";402/429 → "余额不足或请求过于频繁";5xx → "服务端错误(HTTP xxx)";`OPERATION_TIMEDOUT` → "请求超时";`COULDNT_RESOLVE_HOST` → "无法解析域名,检查网络或 base_url";`SSL_CONNECT_ERROR` → "TLS 连接失败"。
+
+### 5.7 Prompt 设计
+
+- **写代码模式**(可被配置覆盖):system = "你是 C/C++ 竞赛代码补全引擎。只输出应插入在 `<CURSOR>` 处的代码;不要重复已有代码,不要解释,不要 markdown 代码围栏。" user = 光标前 N 行 + `<CURSOR>` + 光标后 N 行。

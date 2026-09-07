@@ -1,0 +1,140 @@
+  int left = ms;
+  bool alive = true;
+  while (left > 0) {
+    struct pollfd p{};
+    p.fd = fd;
+    p.events = POLLIN;
+    const int step = left > 50 ? 50 : left;
+    const int r = ::poll(&p, 1, step);
+    left -= step;
+    if (r <= 0) continue;
+    const ssize_t got = ::read(fd, buf, sizeof(buf));
+    if (got > 0) {
+      feed(buf, static_cast<size_t>(got));
+    } else if (got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR)) {
+      alive = false;  // EIO = slave 已关闭
+      if (left > 0) ::usleep(static_cast<useconds_t>(left) * 1000);
+      break;
+    }
+  }
+  return alive;
+}
+
+std::string unescape(const std::string& s) {
+  std::string o;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] != '\\') {
+      o.push_back(s[i]);
+      continue;
+    }
+    if (++i >= s.size()) break;
+    switch (s[i]) {
+      case 'n': o.push_back('\n'); break;
+      case 'r': o.push_back('\r'); break;
+      case 't': o.push_back('\t'); break;
+      case 'e': o.push_back('\x1b'); break;
+      case 's': o.push_back(' '); break;
+      case '\\': o.push_back('\\'); break;
+      case 'x': {
+        std::string h;
+        while (h.size() < 2 && i + 1 < s.size() && std::isxdigit(static_cast<unsigned char>(s[i + 1])))
+          h.push_back(s[++i]);
+        o.push_back(static_cast<char>(std::strtol(h.c_str(), nullptr, 16)));
+        break;
+      }
+      default: o.push_back(s[i]); break;
+    }
+  }
+  return o;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc < 7) {
+    std::fprintf(stderr, "用法: %s <rows> <cols> <script> <raw_out> -- <prog> [args...]\n", argv[0]);
+    return 64;
+  }
+  const int rows = std::atoi(argv[1]);
+  const int cols = std::atoi(argv[2]);
+  const std::string script_path = argv[3];
+  const std::string raw_out = argv[4];
+  int pi = 5;
+  if (std::string(argv[pi]) == "--") ++pi;
+  std::vector<char*> child_argv;
+  for (int i = pi; i < argc; ++i) child_argv.push_back(argv[i]);
+  child_argv.push_back(nullptr);
+
+  std::vector<std::string> script;
+  {
+    std::ifstream f(script_path);
+    std::string ln;
+    while (std::getline(f, ln)) script.push_back(ln);
+  }
+
+  struct winsize ws{};
+  ws.ws_row = static_cast<unsigned short>(rows);
+  ws.ws_col = static_cast<unsigned short>(cols);
+  // 父环境可能把 SIGCHLD 设成 SIG_IGN(某些 shell/容器会),那样子进程会被内核
+  // 自动回收,waitpid 只会返回 -1/ECHILD,于是永远等不到"退出"。必须复位。
+  ::signal(SIGCHLD, SIG_DFL);
+  int master = -1;
+  const pid_t pid = ::forkpty(&master, nullptr, nullptr, &ws);
+  if (pid < 0) {
+    std::perror("forkpty");
+    return 65;
+  }
+  if (pid == 0) {
+    ::setenv("TERM", "xterm-256color", 1);
+    ::setenv("LANG", "C.UTF-8", 1);
+    ::unsetenv("LC_ALL");
+    ::setenv("LINES", std::to_string(rows).c_str(), 1);
+    ::setenv("COLUMNS", std::to_string(cols).c_str(), 1);
+    ::execvp(child_argv[0], child_argv.data());
+    std::fprintf(stderr, "execvp %s 失败: %s\n", child_argv[0], std::strerror(errno));
+    ::_exit(127);
+  }
+
+  int fails = 0;
+  bool alive = true;
+  drain(master, 400);  // 等首帧
+
+  for (const std::string& raw_line : script) {
+    std::string line = raw_line;
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    if (line.empty() || line[0] == '#') continue;
+    const size_t sp = line.find(' ');
+    const std::string cmd = line.substr(0, sp);
+    const std::string arg = (sp == std::string::npos) ? std::string() : line.substr(sp + 1);
+
+    if (cmd == "send") {
+      const std::string bytes = unescape(arg);
+      if (!bytes.empty() && ::write(master, bytes.data(), bytes.size()) < 0) {
+        std::printf("FAIL  write 失败: %s\n", std::strerror(errno));
+        ++fails;
+      }
+      alive = drain(master, 250) && alive;
+    } else if (cmd == "wait") {
+      alive = drain(master, std::atoi(arg.c_str())) && alive;
+    } else if (cmd == "mark") {
+      g_mark = g_plain.size();
+      std::printf("mark  %s @%zu\n", arg.c_str(), g_mark);
+    } else if (cmd == "expect" || cmd == "expectfrom") {
+      const size_t from = (cmd == "expectfrom") ? g_mark : 0;
+      int waited = 0;
+      bool found = g_plain.find(arg, from) != std::string::npos;
+      while (!found && waited < 8000) {
+        if (!drain(master, 100)) {
+          alive = false;
+          // 子进程已退出:再找一次就下结论
+          found = g_plain.find(arg, from) != std::string::npos;
+          break;
+        }
+        waited += 100;
+        found = g_plain.find(arg, from) != std::string::npos;
+      }
+      if (found) {
+        std::printf("PASS  expect \"%s\"\n", arg.c_str());
+      } else {
+        std::printf("FAIL  expect \"%s\"(等了 %dms)\n", arg.c_str(), waited);
+        ++fails;

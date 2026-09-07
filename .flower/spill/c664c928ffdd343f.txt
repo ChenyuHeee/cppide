@@ -1,0 +1,57 @@
+--- does libncurses.so.6 exist? ---
+lrwxrwxrwx 1 root root     17 Mar  6  2025 /usr/lib/aarch64-linux-gnu/libncurses.so.6 -> libncurses.so.6.5
+-rw-r--r-- 1 root root 198592 Mar  6  2025 /usr/lib/aarch64-linux-gnu/libncurses.so.6.5
+--- ldd narrow ---
+	linux-vdso.so.1 (0x0000e61a75c22000)
+	libncurses.so.6 => /lib/aarch64-linux-gnu/libncurses.so.6 (0x0000e61a75b70000)
+	libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000e61a759b0000)
+	libtinfo.so.6 => /lib/aarch64-linux-gnu/libtinfo.so.6 (0x0000e61a75960000)
+	/lib/ld-linux-aarch64.so.1 (0x0000e61a75be5000)
+--- ldd wide probe ---
+	linux-vdso.so.1 (0x0000ea3d329e8000)
+	libncursesw.so.6 => /lib/aarch64-linux-gnu/libncursesw.so.6 (0x0000ea3d32920000)
+	libtinfo.so.6 => /lib/aarch64-linux-gnu/libtinfo.so.6 (0x0000ea3d328d0000)
+	libcurl-gnutls.so.4 => /lib/aarch64-linux-gnu/libcurl-gnutls.so.4 (0x0000ea3d327c0000)
+	libstdc++.so.6 => /lib/aarch64-linux-gnu/libstdc++.so.6 (0x0000ea3d32550000)
+	libgcc_s.so.1 => /lib/aarch64-linux-gnu/libgcc_s.so.1 (0x0000ea3d32510000)
+	libc.so.6 => /lib/aarch64-linux-gnu/libc.so.6 (0x0000ea3d32350000)
+	/lib/ld-linux-aarch64.so.1 (0x0000ea3d329ab000)
+	libnghttp3.so.9 => /lib/aarch64-linux-gnu/libnghttp3.so.9 (0x0000ea3d32300000)
+	libngtcp2_crypto_gnutls.so.8 => /lib/aarch64-linux-gnu/libngtcp2_crypto_gnutls.so.8 (0x0000ea3d322d0000)
+	libngtcp2.so.16 => /lib/aarch64-linux-gnu/libngtcp2.so.16 (0x0000ea3d32260000)
+	libnghttp2.so.14 => /lib/aarch64-linux-gnu/libnghttp2.so.14 (0x0000ea3d32210000)
+	libidn2.so.0 => /lib/aarch64-linux-gnu/libidn2.so.0 (0x0000ea3d321c0000)
+	librtmp.so.1 => /lib/aarch64-linux-gnu/librtmp.so.1 (0x0000ea3d32180000)
+	libssh2.so.1 => /lib/aarch64-linux-gnu/libssh2.so.1 (0x0000ea3d32110000)
+	libpsl.so.5 => /lib/aarch64-linux-gnu/libpsl.so.5 (0x0000ea3d320d0000)
+	libnettle.so.8 => /lib/aarch64-linux-gnu/libnettle.so.8 (0x0000ea3d32060000)
+	libgnutls.so.30 => /lib/aarch64-linux-gnu/libgnutls.so.30 (0x0000ea3d31e00000)
+	libgssapi_krb5.so.2 => /lib/aarch64-linux-gnu/libgssapi_krb5.so.2 (0x0000ea3d31d90000)
+	libldap.so.2 => /lib/aarch64-linux-gnu/libldap.so.2 (0x0000ea3d31d10000)
+	liblber.so.2 => /lib/aarch64-linux-gnu/liblber.so.2 (0x0000ea3d31ce0000)
+	libzstd.so.1 => /lib/aarch64-linux-gnu/libzstd.so.1 (0x0000ea3d31c10000)
+	libbrotlidec.so.1 => /lib/aarch64-linux-gnu/libbrotlidec.so.1 (0x0000ea3d31be0000)
+	libz.so.1 => /lib/aarch64-linux-gnu/libz.so.1 (0x0000ea3d31ba0000)
+	libm.so.6 => /lib/aarch64-linux-gnu/libm.so.6 (0x0000ea3d31af0000)
+	libunistring.so.5 => /lib/aarch64-linux-gnu/libunistring.so.5 (0x0000ea3d318f0000)
+	libhogweed.so.6 => /lib/aarch64-linux-gnu/libhogweed.so.6 (0x0000ea3d31880000)
+	libgmp.so.10 => /lib/aarch64-linux-gnu/libgmp.so.10 (0x0000ea3d317e0000)
+	libcrypto.so.3 => /lib/aarch64-linux-gnu/libcrypto.so.3 (0x0000ea3d311c0000)
+	libp11-kit.so.0 => /lib/aarch64-linux-gnu/libp11-kit.so.0 (0x0000ea3d30ff0000)
+	libtasn1.so.6 => /lib/aarch64-linux-gnu/libtasn1.so.6 (0x0000ea3d30fb0000)
+	libkrb5.so.3 => /lib/aarch64-linux-gnu/libkrb5.so.3 (0x0000ea3d30ec0000)
+	libk5crypto.so.3 => /lib/aarch64-linux-gnu/libk5crypto.so.3 (0x0000ea3d30e70000)
+	libcom_err.so.2 => /lib/aarch64-linux-gnu/libcom_err.so.2 (0x0000ea3d30e40000)
+	libkrb5support.so.0 => /lib/aarch64-linux-gnu/libkrb5support.so.0 (0x0000ea3d30e10000)
+	libsasl2.so.2 => /lib/aarch64-linux-gnu/libsasl2.so.2 (0x0000ea3d30dd0000)
+	libssl.so.3 => /lib/aarch64-linux-gnu/libssl.so.3 (0x0000ea3d30ca0000)
+	libbrotlicommon.so.1 => /lib/aarch64-linux-gnu/libbrotlicommon.so.1 (0x0000ea3d30c60000)
+	libffi.so.8 => /lib/aarch64-linux-gnu/libffi.so.8 (0x0000ea3d30c30000)
+	libkeyutils.so.1 => /lib/aarch64-linux-gnu/libkeyutils.so.1 (0x0000ea3d30c00000)
+	libresolv.so.2 => /lib/aarch64-linux-gnu/libresolv.so.2 (0x0000ea3d30bd0000)
+--- wide symbol presence ---
+/usr/lib/aarch64-linux-gnu/libncurses.so.6: mvaddwstr=0 get_wch=0 add_wch=0
+/usr/lib/aarch64-linux-gnu/libncursesw.so.6: mvaddwstr=1 get_wch=1 add_wch=1
+--- dpkg: which pkg owns libncurses.so ---
+libncurses-dev:arm64: /usr/lib/aarch64-linux-gnu/libncurses.so
+libncurses-dev:arm64: /usr/lib/aarch64-linux-gnu/libncursesw.so

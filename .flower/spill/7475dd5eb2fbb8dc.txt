@@ -1,0 +1,60 @@
+120	    return false;
+121	  }
+122	  if (!positional.empty()) {
+123	    if (positional[0].empty()) {
+124	      err = "文件名为空。";
+125	      return false;
+126	    }
+127	    a.file = util::expandUser(positional[0]);
+128	  }
+129	  return true;
+130	}
+131	
+132	// -------------------------------------------------------------------- help
+133	void printHelp() {
+134	  std::printf(
+135	      "cppide %s —— 跑在终端里的 C/C++ 单文件编辑器(编辑 + 一键编译运行 + AI 辅助)\n"
+136	      "\n"
+137	      "用法:\n"
+138	      "  cppide [选项] [文件]\n"
+139	      "\n"
+140	      "  不给文件名则打开一个未命名的空缓冲区(Ctrl-O 会提示另存为)。\n"
+141	      "  文件扩展名决定语言:.c 用 cc,.cpp/.cc/.cxx/.C 用 c++,.h/.hpp 只做语法检查。\n"
+142	      "\n"
+143	      "选项:\n"
+144	      "  --config <PATH>   指定配置文件(优先于 CPPIDE_CONFIG 与默认路径)\n"
+145	      "  --print-config    把示例配置打到 stdout(可直接重定向成配置文件)\n"
+146	      "  --doctor          自查:终端能力、配置解析结果、编译器是否找得到\n"
+147	      "  -h, --help        显示本帮助\n"
+148	      "  -V, --version     显示版本\n"
+149	      "\n"
+150	      "配置文件:\n"
+151	      "  默认路径:%s\n"
+152	      "  生成示例:cppide --print-config > 上面这个路径\n"
+153	      "  api_key 留空则只关闭 AI,编辑 / 编译 / 运行完全可用。\n"
+154	      "  环境变量 CPPIDE_API_KEY(或 DEEPSEEK_API_KEY)、CPPIDE_MODEL、\n"
+155	      "  CPPIDE_BASE_URL、CPPIDE_CONFIG 的优先级高于配置文件。\n"
+156	      "\n"
+157	      "快捷键:\n",
+158	      kVersion, ConfigLoader::defaultPath().c_str());
+159	  for (const std::string& ln : helpLines()) std::printf("  %s\n", ln.c_str());
+160	  std::printf(
+161	      "\n"
+162	      "说明:Ctrl-C / Ctrl-Z / Ctrl-S / Ctrl-Q / Ctrl-\\ 一律不绑定(终端流控与信号)。\n"
+163	      "      运行中的程序死循环时,在【运行】面板按 Esc 即可终止它。\n");
+164	}
+165	
+166	// ------------------------------------------------------------------ doctor
+167	// 在 PATH 里找可执行文件(不启动任何子进程)。prog 含 '/' 时直接测该路径。
+168	bool findInPath(const std::string& prog, std::string& full) {
+169	  if (prog.empty()) return false;
+170	  if (prog.find('/') != std::string::npos) {
+171	    if (::access(prog.c_str(), X_OK) == 0) {
+172	      full = prog;
+173	      return true;
+174	    }
+175	    return false;
+176	  }
+177	  const std::string path = util::envOr("PATH", "/usr/bin:/bin:/usr/local/bin");
+178	  for (const std::string& dir : util::split(path, ':')) {
+179	    if (dir.empty()) continue;

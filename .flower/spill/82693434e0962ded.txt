@@ -1,0 +1,120 @@
+102:bool Editor::loadFile(const std::string& path, std::string& err) {
+103-  if (!buf_.loadFile(path, err)) return false;
+104-  clearGhost();
+105-  cursor_ = Pos{0, 0};
+106-  desired_display_col_ = 0;
+107-  vp_.top = 0;
+108-  vp_.left = 0;
+109-  clipboard_.clear();
+110-  clip_accumulate_ = false;
+111-  refreshLang();
+112-  ensureCursorVisible();
+113-  return true;
+114-}
+115-
+116:bool Editor::saveFile(const std::string& path, std::string& err) {
+117-  buf_.breakUndoMerge();
+118-  // Wave 2 约定:TextBuffer::saveFile() 只 clearDirty(),**不改 path_**。
+119-  // 所以“另存为”必须先 setPath(),否则标题栏/语言推导仍指向旧路径。
+120-  const std::string target = path.empty() ? buf_.path() : path;
+121-  if (!target.empty() && target != buf_.path()) buf_.setPath(target);
+122-  if (!buf_.saveFile(target, err)) return false;
+123-  refreshLang();
+124-  return true;
+125-}
+126-
+127-// ---------------------------------------------------------------- 光标 / 视口
+128-Pos Editor::cursor() const { return cursor_; }
+129-
+130-void Editor::setCursor(Pos p) {
+131-  cursor_ = buf_.clampPos(p);
+132-  desired_display_col_ = displayColOf(cursor_);
+--
+353:void Editor::gotoLine(int line_1based, int col_bytes) {
+354-  int line = line_1based - 1;
+355-  if (line < 0) line = 0;                                  // 越界:负行号 -> 第 1 行
+356-  if (line > buf_.lineCount() - 1) line = buf_.lineCount() - 1;
+357-  setCursor(Pos{line, col_bytes});                         // setCursor 内部 clamp
+358-}
+359-
+360-// ---------------------------------------------------------------- 编辑
+361-void Editor::insertText(const std::string& utf8) {
+362-  if (utf8.empty()) return;
+363-  clearGhost();                                 // 用户一敲字,旧建议立即作废
+364-  const bool one_char = (utf8.find('\n') == std::string::npos) &&
+365-                        (util::utf8Next(utf8, 0) == utf8.size());
+366-  // 单字符用 "insert-char":TextBuffer 只对这个 label 做 800ms 合并窗口,
+367-  // 粘贴/多字符走 "insert-text",不会被粘进相邻的打字组。
+368-  const char* label = one_char ? "insert-char" : "insert-text";
+369-  const int from = cursor_.line;
+--
+461:void Editor::indent() {
+462-  clearGhost();
+463-  std::string ins;
+464-  if (cfg_.expand_tab) {
+465-    const int tw = indentWidthOf(cfg_);
+466-    const int dc = cursorDisplayCol();
+467-    int n = tw - (dc % tw);
+468-    if (n <= 0) n = tw;
+469-    ins.assign(static_cast<size_t>(n), ' ');   // 补到下一个制表位
+470-  } else {
+471-    ins = "\t";
+472-  }
+473-  const int from = cursor_.line;
+474-  buf_.noteCursorBefore(cursor_);
+475-  {
+476-    TextBuffer::Edit guard(buf_, "indent");
+477-    cursor_ = buf_.insert(cursor_, ins);
+--
+572:bool Editor::undo() {
+573-  // ★ 绝不包进 TextBuffer::Edit:group_depth_>0 时 TextBuffer::undo() 返回 false。
+574-  clearGhost();
+575-  Pos p = cursor_;
+576-  if (!buf_.undo(p)) return false;
+577-  cursor_ = buf_.clampPos(p);
+578-  hlc_.resize(buf_.lineCount());
+579-  hlc_.invalidateFrom(0);        // 撤销可能改动任意行,整体失效最省心
+580-  desired_display_col_ = displayColOf(cursor_);
+581-  clip_accumulate_ = false;
+582-  ensureCursorVisible();
+583-  return true;
+584-}
+585-
+586-bool Editor::redo() {
+587-  clearGhost();
+588-  Pos p = cursor_;
+--
+600:bool Editor::find(const std::string& needle, bool forward, bool from_cursor) {
+601-  if (needle.empty()) return false;              // 退化输入:空串不算找到
+602-  const int nl = buf_.lineCount();
+603-  last_search_ = needle;
+604-  const Pos start = from_cursor ? cursor_
+605-                                : (forward ? Pos{0, 0} : buf_.endPos());
+606-
+607-  if (forward) {
+608-    // 起点:from_cursor 时从光标后一个字节开始,避免原地命中同一处。
+609-    int from = start.col + (from_cursor ? 1 : 0);
+610-    for (int step = 0; step <= nl; ++step) {     // <= nl:回绕一圈后再扫首行剩余部分
+611-      const int ln = (start.line + step) % nl;
+612-      const std::string& l = buf_.line(ln);
+613-      const size_t f = (from < 0) ? 0 : static_cast<size_t>(from);
+614-      if (f <= l.size()) {
+615-        const size_t hit = l.find(needle, f);
+616-        if (hit != std::string::npos) {
+--
+650:void Editor::setGhost(const Ghost& g) {
+651-  // 两道防线:assert 抓开发期的逻辑错误;运行期 early-return 才是 NDEBUG 下真正
+652-  // 起作用的那一道 —— 退化结果永远是“没有 ghost”,不可能是“代码被插入”。
+653-  assert(g.sink == AiSink::GhostText);
+654-  if (g.sink != AiSink::GhostText) {
+655-    ghost_.clear();
+656-    return;
+657-  }
+658-  ghost_ = g;
+659-  ghost_.anchor = buf_.clampPos(ghost_.anchor);
+660-}
+661-
+662-void Editor::clearGhost() { ghost_.clear(); }
+663-
+664-void Editor::appendGhostDelta(uint64_t gen, const std::string& delta) {
+665-  if (ghost_.sink != AiSink::GhostText) return;   // 没有活的 ghost(含默认态)

@@ -1,0 +1,70 @@
+60	  const char* ai_state_zh = "";
+61	
+62	  // 文件与状态栏
+63	  std::string file_name;                 // 展示用 basename;未命名时为 "未命名"
+64	  bool file_dirty = false;
+65	  int  cursor_line = 1, cursor_col = 1;  // 1 起,col 为显示列
+66	  std::string lang_zh;                   // "C" / "C++" / "文本"
+67	  std::string build_summary_zh;          // 上次构建结果
+68	  int  errors = 0, warnings = 0;
+69	  bool running = false;                  // 有子进程在跑(状态栏提示 "运行中… Esc 终止")
+70	  std::string status_msg;                // 临时消息(过期由 tick 清)
+71	
+72	  // 提示行
+73	  PromptKind prompt = PromptKind::None;
+74	  std::string prompt_label;
+75	  std::string prompt_input;
+76	  int prompt_cursor = 0;                 // 字节偏移
+77	
+78	  bool help_visible = false;
+79	};
+80	
+81	class App {
+82	 public:
+83	  // cfg 按值接管(App 是它的所有者);open_path 为空则打开一个未命名空缓冲区。
+84	  App(Config cfg, std::string open_path);
+85	  ~App();
+86	  App(const App&) = delete;
+87	  App& operator=(const App&) = delete;
+88	
+89	  bool init(std::string& err);        // Ui::init + 首帧布局 + 启动提示
+90	  int  run();                         // 主循环;返回进程退出码
+91	  AppModel model() const;
+92	
+93	 private:
+94	  // ---- 循环骨架 ----
+95	  void tick();
+96	  void drainEvents();
+97	  void onKey(int key);
+98	  void onEditorKey(int key, Action a);
+99	  void onPanelKey(int key, Action a);
+100	  void onPromptKey(int key, Action a);
+101	  void relayout();
+102	  void markDirty();
+103	
+104	  // ---- 事件处理 ----
+105	  void onAiStarted(const AppEvent& ev);
+106	  void onAiDelta(const AppEvent& ev);
+107	  // ★ §6(2) 的那个唯一 switch:GhostText 分支才调 Editor::setGhost,
+108	  //   PanelOnly 分支只往 AI 面板追加文本。
+109	  void onAiDone(const AppEvent& ev);
+110	  void onAiError(const AppEvent& ev);
+111	  void onCompileStarted(const AppEvent& ev);
+112	  void onCompileDone(const AppEvent& ev);
+113	  void onRunStarted(const AppEvent& ev);
+114	  void onRunDone(const AppEvent& ev);
+115	
+116	  // ---- 动作 ----
+117	  void doSave();
+118	  void doQuit(bool force);
+119	  void doCompile(bool then_run);
+120	  void doRun(bool auto_compile);
+121	  void doToggleAiMode();
+122	  void doAskAi();
+123	  void doTab();            // 有 ghost 则 acceptGhost,否则 indent —— 这条路径不判模式
+124	  void doEscape();         // ghost -> 提示行 -> 面板焦点;运行面板中 = 终止子进程
+125	  void doHelp(bool on);
+126	  void doRedraw();
+127	
+128	  // ---- 诊断跳转 ----
+129	  void jumpToDiag(int diag_index);

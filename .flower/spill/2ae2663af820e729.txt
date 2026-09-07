@@ -1,0 +1,70 @@
+157	## 3. 语法高亮
+158	
+159	设计原则:**逐行纯函数扫描 + 1 字节行首状态**。
+160	
+161	```cpp
+162	enum class Tok : uint8_t {
+163	  Normal, Keyword, Type, Preproc, String, Char, Number,
+164	  Comment, Operator, Func, TodoInComment
+165	};
+166	
+167	// 行首跨行状态,打包进 1 字节
+168	enum : uint8_t {
+169	  ST_NONE        = 0,
+170	  ST_BLOCKCOMMENT= 1 << 0,   // 处于 /* ... */ 中
+171	  ST_RAWSTRING   = 1 << 1,   // 处于未闭合的 R"(...)" 中(近似)
+172	  ST_CONTLINE    = 1 << 2,   // 上一行以 '\' 结尾(续行)
+173	};
+174	
+175	struct Span { int start; int len; Tok tok; };   // 按字节的 run-length
+176	
+177	class Highlighter {
+178	public:
+179	  explicit Highlighter(Lang lang);
+180	  void setLang(Lang l);
+181	  // 纯函数:给定行首状态,填充 spans,返回行尾状态
+182	  uint8_t scanLine(const std::string& line, uint8_t entryState,
+183	                   std::vector<Span>& out) const;
+184	  static bool isKeyword(const std::string& w, Lang l);
+185	  static bool isTypeWord(const std::string& w, Lang l);
+186	};
+187	
+188	class HighlightCache {
+189	public:
+190	  void resize(int lineCount);
+191	  void invalidateFrom(int line);
+192	  uint8_t entryState(const TextBuffer& b, const Highlighter& h, int line);
+193	  void spansFor(const TextBuffer& b, const Highlighter& h, int line,
+194	                std::vector<Span>& out);
+195	private:
+196	  std::vector<uint8_t> entry_;   // entry_[i] = 第 i 行行首状态
+197	  int validUpTo_ = 0;
+198	};
+199	```
+200	
+201	- 缓存只存行首状态:1 字节/行,10000 行 = 10KB。
+202	- 编辑第 N 行 → `invalidateFrom(N)`。渲染只需要 `[0 .. top+h]` 的状态,惰性向下扫描;**收敛提前退出**:重算到某行时若新状态等于旧缓存状态,后续全部不变,立刻停止。所以在文件中间敲 `/*` 也不会全文重扫。
+203	- 词法细节:
+204	  - 预处理:行首(跳过空白)为 `#` → `#` 与指令词染 `Preproc`,其后继续常规扫描;`#include` 后的 `<...>` 当 `String`。
+205	  - `//` 到行尾 `Comment`(以 `\` 结尾则置 `ST_CONTLINE`)。
+206	  - `/* */` 用 `ST_BLOCKCOMMENT`。注释内的 `TODO`/`FIXME`/`XXX` 染 `TodoInComment`。
+207	  - 字符串 `"..."` 处理 `\` 转义;未闭合染到行尾但**不泄漏状态**(C 字符串不能跨行,除续行)。
+208	  - **原始字符串**:`R"delim(...)"` 的分隔符是变长的,无法塞进 1 字节。决策:仅支持单行内的原始字符串;未闭合时置 `ST_RAWSTRING`,后续行整行当 `String` 直到出现 `)"`。这是**有意的近似**,自定义分隔符且体内含 `)"` 时会误染——ICPC 代码里基本不出现,README 记为已知限制。
+209	  - 数字:`0x` / `0b` / 十进制 / `.` / `e±` / 后缀 `uUlLfF` / C++14 数字分隔符 `'`(在数字扫描器内部消化,避免与字符字面量的 `'` 冲突)。
+210	  - 字符字面量 `'a'` / `'\n'` / `'\x41'`。
+211	  - 标识符查关键字表与类型表(两张 `static const std::unordered_set<std::string>`,首次使用惰性构造)。类型表除内建类型外收入常用 STL 名(`string vector map set pair queue priority_queue size_t int64_t ll` 等),让竞赛代码颜色好看。
+212	  - 标识符后紧跟 `(` → `Tok::Func`(便宜的观感提升)。
+213	- 颜色对:8 个 pair;`COLORS >= 256` 时 ghost 用 gray(color 8),否则 `A_DIM`。
+214	
+215	---
+216	
+217	## 4. 编译 / 运行子系统(重点:绝不挂死编辑器)
+218	
+219	### 4.1 为什么是 fork+exec 而不是 popen
+220	
+221	`popen` 只能单向、拿不到 pid(无法超时 kill)、无法分离 stdout/stderr、无法拿到真实退出状态、且经过 `/bin/sh`(路径含空格就出事)。我们四项都需要,所以自己 fork。
+222	
+223	```cpp
+224	struct ProcSpec {
+225	  std::string prog;                       // execvp 走 PATH 解析
+226	  std::vector<std::string> args;          // 不含 prog

@@ -1,0 +1,80 @@
+505	    const std::string s = util::codepointToUtf8(charOf(key));
+506	    prompt_input_.insert(static_cast<size_t>(prompt_cursor_), s);
+507	    prompt_cursor_ += static_cast<int>(s.size());
+508	    markDirty();
+509	  }
+510	}
+511	
+512	void App::relayout() {
+513	  const Layout& lay = ui_.relayout(model());
+514	  ed_.setViewSize(lay.editor.w, lay.editor.h);
+515	  ed_.ensureCursorVisible();
+516	  for (Panel& p : panels_) p.setViewSize(lay.panel.w, lay.panel.h);
+517	  stdin_buf_.setViewSize(lay.panel.w, lay.panel.h);
+518	}
+519	
+520	void App::markDirty() { dirty_ = true; }
+521	
+522	// ================================================================ AI 事件
+523	void App::onAiStarted(const AppEvent& ev) {
+524	  ai_stream_.clear();
+525	  ai_anchor_ = ed_.cursor();          // ghost 的插入锚点 = 请求发出时的光标
+526	  ai_anchor_gen_ = ev.gen;
+527	  ed_.setExpectedGen(ev.gen);
+528	  setStatus("AI 思考中…", 30000);
+529	  markDirty();
+530	}
+531	
+532	void App::onAiDelta(const AppEvent& ev) {
+533	  if (ev.text.empty()) return;
+534	  // 这里刻意不判 sink/模式:只累积文本。文本"允许变成什么"由 onAiDone
+535	  // 的那一个 switch 独家决定(§6(2))。
+536	  ai_stream_ += ev.text;
+537	  markDirty();
+538	}
+539	
+540	void App::onAiDone(const AppEvent& ev) {
+541	  // AiDone 可能带全文,也可能只是收尾(全文在 delta 里)。两种约定都兼容。
+542	  const std::string& full = ev.text.size() >= ai_stream_.size() ? ev.text : ai_stream_;
+543	
+544	  // ★★ 全工程唯一的"AI 回复去哪里"判决点(§6(2))。
+545	  //    GhostText 分支才碰 Editor::setGhost;PanelOnly 分支只往 AI 面板追加。
+546	  switch (ev.sink) {
+547	    case AiSink::GhostText: {
+548	      if (full.empty()) {
+549	        setStatus("AI 没有给出补全", 4000);
+550	        break;
+551	      }
+552	      Ghost g;
+553	      g.text = full;
+554	      g.anchor = (ai_anchor_gen_ == ev.gen) ? ai_anchor_ : ed_.cursor();
+555	      g.gen = ev.gen;
+556	      g.sink = AiSink::GhostText;
+557	      g.complete = true;              // 只有 AiDone 之后 Tab 才接受
+558	      ed_.setExpectedGen(ev.gen);
+559	      ed_.setGhost(g);
+560	      setStatus("AI 建议就绪:Tab 接受,Esc 丢弃", 6000);
+561	      break;
+562	    }
+563	    case AiSink::PanelOnly: {
+564	      Panel& p = panel(PanelId::Ai);
+565	      p.appendStreaming(full.empty() ? std::string("(AI 没有返回内容)") : full);
+566	      p.endStreaming();
+567	      p.append("\n");                 // 与下一条回复隔开
+568	      if (focus_ != static_cast<int>(PanelId::Ai)) p.setUnread(true);
+569	      if (p.autoScroll()) p.scrollToEnd();
+570	      setStatus("AI 思路提示已更新(Alt-3 查看)", 5000);
+571	      break;
+572	    }
+573	  }
+574	  ai_stream_.clear();
+575	  markDirty();
+576	}
+577	
+578	void App::onAiError(const AppEvent& ev) {
+579	  const std::string msg = ev.text.empty() ? std::string("AI 请求失败") : ev.text;
+580	  setStatus("AI:" + msg, 5000);       // 状态栏 3~5 秒
+581	  appendAi("[" + util::formatTimeHMS(util::nowEpochMs()) + "] AI 错误:" + msg, true);
+582	  ai_stream_.clear();
+583	  markDirty();
+584	}

@@ -1,0 +1,149 @@
+## 5. AI 子系统
+
+### 5.1 线程模型
+
+- **一个** worker 线程,仅在 `cfg.aiEnabled()` 时创建。它阻塞在 `in_.waitPop(req, 200ms)` 上。
+- UI 线程与 worker 之间只有两个 `Mailbox`:请求进、事件出。UI 线程**只用 `tryPop`**,永不阻塞。
+- 主循环用 `timeout(60)` 让 `getch()` 在空闲时每 60ms 返回 `ERR`,以此驱动 500ms 停顿判定。**不用 `halfdelay()`** ——它只有 100ms(十分之一秒)粒度且强制 cbreak 语义。60ms 唤醒的空闲 CPU 接近 0,因为 ncurses 底层就是在 tty 上 poll。
+
+```cpp
+enum class AiMode { Practice, Code };          // 练习模式 / 写代码模式
+enum class AiSink { PanelOnly, GhostText };    // 回复"允许变成什么"
+
+struct AiRequest {
+  uint64_t gen;
+  AiMode   mode;
+  AiSink   sink;
+  std::string system_prompt, user_prompt;
+  double temperature; int max_tokens; bool stream;
+};
+
+class AiService {
+public:
+  AiService(const Config& cfg, Mailbox<AppEvent>* out);
+  ~AiService();                               // 取消 + join
+
+  bool   enabled() const;
+  AiMode mode() const;  void setMode(AiMode m);  AiMode toggleMode();
+
+  void noteActivity();                        // 任意改动/移动光标时调用:记时间 + gen_++
+  void maybeAutoTrigger(const TextBuffer& b, Pos cur);   // 每 tick 调用一次
+  void askNow(const TextBuffer& b, Pos cur, const std::string& question);
+  void cancelInFlight();
+  uint64_t generation() const;
+  bool inFlight() const;
+  const char* stateZh() const;                // "就绪"/"思考中…"/"未配置"/"错误"
+
+private:
+  static AiSink sinkFor(AiMode m) {           // ★ 全工程唯一的 sink 决策点
+    return m == AiMode::Code ? AiSink::GhostText : AiSink::PanelOnly;
+  }
+  AiRequest buildRequest(const TextBuffer&, Pos, const std::string& q, AiMode) const;
+  static void buildContext(const TextBuffer&, Pos, int max_lines,
+                           std::string& prefix, std::string& suffix);
+  void workerLoop();
+  std::atomic<uint64_t> gen_{0};
+  std::atomic<bool> in_flight_{false};
+  std::atomic<int64_t> last_activity_ms_{0};
+  Mailbox<AiRequest> in_;  Mailbox<AppEvent>* out_;
+  std::thread th_;
+};
+```
+
+### 5.2 取消:generation 序号(双重过滤)
+
+- `gen_` 是 `std::atomic<uint64_t>`。任何缓冲区改动或光标移动 → `noteActivity()` → `gen_.fetch_add(1)`。
+- worker 拿到 `req.gen` 后,把 `[this, g = req.gen]{ return gen_.load() != g; }` 作为取消回调传给 `HttpChat::send`。curl 的**进度回调**每秒被调用数次,返回非 0 即刻中止传输(`CURLE_ABORTED_BY_CALLBACK`);写回调也会在检测到取消时返回短计数以中止。
+- 每个 `AppEvent` 都携带 `gen`。UI 线程 `drainEvents()` 丢弃 `gen != ai_.generation()` 的事件。
+- 两层过滤互相独立:**在飞的回复既到不了网络层之外,即使到了也画不出来**。用户继续打字就等于旧请求作废。
+
+### 5.3 触发与限流
+
+- 自动触发条件全部满足才发:`mode == Code` && `enabled()` && `!inFlight()` && `now - last_activity >= cfg.ghost_delay_ms`(默认 500)&& `now - last_auto_request >= cfg.ghost_min_interval_ms`(默认 1200,省钱)&& 缓冲区有至少一个非空白字符。
+- 手动 `Ctrl-A` 无视 `ghost_min_interval_ms`,但同样先取消在飞请求。
+- 超时由 curl 保证(`total_timeout_ms` 默认 20000 + `LOW_SPEED_LIMIT` 1 字节/10 秒),所以 worker 不需要额外看门狗——`send` 一定会返回。
+
+### 5.4 错误上报
+
+worker 推 `EvKind::AiError` + 中文消息。`App` 同时:状态栏显示 3 秒 + 追加到 AI 面板(带时间戳),这样错误不会一闪而过丢失。错误文案映射见 §5.6。
+
+### 5.5 流式与背压
+
+- `AiDelta` 事件追加到 `ghost_.text`,ghost 逐字渐显(手感好)。
+- ghost **只在 `AiDone` 后才可接受**(`ghost_.complete`):接受半截生成的代码等于插入语法不完整的片段。生成中按 Tab → 状态栏提示"AI 正在生成…",不插入。
+- 背压:worker 把 delta 攒起来,**最多每 40ms 推一个事件**,避免 UI 线程被几千个微事件淹没。`drainEvents()` 每 tick 最多处理 200 个事件,保证键盘输入不被饿死。
+
+### 5.6 HTTP 层
+
+```cpp
+struct ChatMessage { std::string role, content; };
+
+struct ChatRequest {
+  std::string url, api_key, model;
+  std::vector<ChatMessage> messages;
+  double temperature = 0.2;
+  int    max_tokens  = 256;
+  bool   stream      = true;
+  int    connect_timeout_ms = 5000;
+  int    total_timeout_ms   = 20000;
+  std::vector<std::string> stop;
+  std::string toJson() const;                  // 用 mj::Value 生成,自动转义
+};
+
+using ChatDeltaFn  = std::function<bool(const std::string& delta)>;  // 返回 false 中止
+using ChatCancelFn = std::function<bool()>;                          // 由 curl 进度回调轮询
+
+struct ChatResponse {
+  bool ok = false;
+  std::string text;              // 拼接后的完整内容
+  std::string error;             // 中文,面向用户
+  long http_status = 0;
+  bool canceled = false, timed_out = false;
+  int64_t elapsed_ms = 0;
+  int prompt_tokens = 0, completion_tokens = 0;
+};
+
+class HttpChat {                 // 每线程一个实例,复用同一个 CURL* 句柄
+public:
+  HttpChat(); ~HttpChat();
+  static void globalInit();      // curl_global_init,必须在任何线程启动前于 main 调用
+  static void globalCleanup();
+  ChatResponse send(const ChatRequest& req,
+                    const ChatDeltaFn& on_delta,
+                    const ChatCancelFn& should_cancel);
+private:
+  void* curl_ = nullptr;         // CURL*,保持 void* 以免头文件引 curl.h
+  std::string sse_carry_;
+};
+
+class SseParser {                // 纯函数式,可单测
+public:
+  void feed(const char* p, size_t n,
+            const std::function<void(const std::string& payload)>& cb);
+  void reset();
+};
+```
+
+必须设置的 curl 选项(逐条都有理由):
+- `CURLOPT_NOSIGNAL = 1L` —— **多线程程序里是强制的**。否则 curl 的 DNS 超时走 `SIGALRM` + `siglongjmp`,在非主线程上会破坏状态甚至崩溃。
+- `CURLOPT_TIMEOUT_MS`、`CURLOPT_CONNECTTIMEOUT_MS`、`CURLOPT_LOW_SPEED_LIMIT=1` / `CURLOPT_LOW_SPEED_TIME=10`(卡死的流会自己死掉)。
+- `CURLOPT_NOPROGRESS = 0` + `CURLOPT_XFERINFOFUNCTION` → 回调里查 `should_cancel()`,非 0 返回即刻中止。这是"用户继续打字 → 请求立即作废"的实现点。
+- `CURLOPT_HTTPHEADER`:`Authorization: Bearer <key>`、`Content-Type: application/json`、流式时 `Accept: text/event-stream`。
+- `CURLOPT_VERBOSE` 恒为 0。**API key 绝不出现在面板、日志、错误消息里**。
+- SSE 解析:帧为 `data: {json}\n\n`,结束为 `data: [DONE]`;取 `choices[0].delta.content`。DeepSeek 若返回 `reasoning_content`,**只在练习模式追加**,写代码模式丢弃(思维链不该被当成代码插入)。
+- 非流式回退(`cfg.stream == false`):取 `choices[0].message.content`。
+- 兼容性兜底:HTTP 4xx 时 body 往往是普通 JSON 错误对象而非 SSE;按首字节是 `{` 或 content-type 判定,走错误路径解析 `error.message`。
+- 解析不出来时,把 body 前 200 字节(**去掉 key**)追加到 AI 面板,便于在没有调试器的情况下诊断协议不匹配。
+- 错误文案:401 → "API key 无效或已过期";402/429 → "余额不足或请求过于频繁";5xx → "服务端错误(HTTP xxx)";`OPERATION_TIMEDOUT` → "请求超时";`COULDNT_RESOLVE_HOST` → "无法解析域名,检查网络或 base_url";`SSL_CONNECT_ERROR` → "TLS 连接失败"。
+
+### 5.7 Prompt 设计
+
+- **写代码模式**(可被配置覆盖):system = "你是 C/C++ 竞赛代码补全引擎。只输出应插入在 `<CURSOR>` 处的代码;不要重复已有代码,不要解释,不要 markdown 代码围栏。" user = 光标前 N 行 + `<CURSOR>` + 光标后 N 行。
+  后处理(在 `ai.cpp`):剥掉 ``` 围栏;若模型重复了当前行已有文本则去掉该前缀;截断到 `cfg.ghost_max_lines`(默认 8);去掉尾部空行。
+- **练习模式**:system = "你是 ICPC 教练。**绝对不要输出可直接编译运行的完整代码或代码块**。只用中文给出:1) 可能的算法方向 2) 时间/空间复杂度估计 3) 当前代码的卡点或潜在 bug 方向 4) 下一步该想什么。不超过 300 字。" 并由代码**无条件追加**一句不可被配置覆盖的后缀:"再次强调:不要输出任何可直接编译运行的代码。"
+  这只是 prompt 层的礼貌;真正的保证是 §6 的结构性保证。
+- 上下文截断:`lineCount > cfg.ai_max_context_lines` 时,取光标前后各一半行,中间插 `/* ...省略... */` 标记。
+
+---
+
+## 6. 两种模式:练习模式绝不插入缓冲区的硬性保证

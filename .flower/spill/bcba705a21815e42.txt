@@ -1,0 +1,70 @@
+70	editor->{textbuf, highlight, util, ai.h(仅 AiSink 枚举)}
+71	aihttp->{json, config, util}
+72	config->{json, util}
+73	textbuf/highlight/panel/proc/json/util -> 仅 util 或无依赖
+74	```
+75	
+76	`json.h` 拆成 `.h`+`.cpp`(而非纯 header-only)是为了让 Wave 2 的多个 agent 能并行、且不拖慢每个 TU 的编译;"不引外部依赖"的要求仍然满足。
+77	
+78	---
+79	
+80	## 2. 核心数据结构
+81	
+82	### 2.1 文本缓冲区:行数组 + 逆操作日志
+83	
+84	`std::vector<std::string> lines_`,永远至少 1 行。理由:单文件 ICPC 源码不过几千行,插入/删除行的 O(n) memmove 完全不可感知;gap buffer / piece table 的复杂度换不来任何用户可感的收益,而且行数组让语法高亮、渲染、行号跳转都变直接。
+85	
+86	```cpp
+87	struct Pos { int line = 0; int col = 0; };   // col = 行内字节偏移(非显示列)
+88	bool operator==(Pos,Pos); bool operator<(Pos,Pos);
+89	struct Range { Pos a, b; };                  // 约定 a <= b(规范化后)
+90	
+91	enum class Lang : uint8_t { C, Cpp, Unknown };
+92	
+93	class TextBuffer {
+94	public:
+95	  TextBuffer();
+96	  void reset(std::vector<std::string> lines);
+97	  bool loadFile(const std::string& path, std::string& err);
+98	  bool saveFile(const std::string& path, std::string& err);   // 原子写:tmp + rename
+99	
+100	  int  lineCount() const;
+101	  const std::string& line(int i) const;     // 越界安全,返回空行静态量
+102	  int  lineLen(int i) const;                // 字节数
+103	  std::string text() const;
+104	  std::string textRange(const Range& r) const;
+105	
+106	  // 唯一两个改动存储的原语,二者都记录撤销
+107	  Pos insert(Pos at, const std::string& text);   // 处理 '\n' 拆行,返回结束位置
+108	  Pos erase(const Range& r);                     // 返回 r.a
+109	
+110	  void beginGroup(const char* label);
+111	  void endGroup();
+112	  struct Edit {                                   // RAII
+113	    Edit(TextBuffer& b, const char* label); ~Edit();
+114	  };
+115	  bool undo(Pos& cursorOut);
+116	  bool redo(Pos& cursorOut);
+117	
+118	  bool dirty() const;  void clearDirty();
+119	  int  revision() const;                    // 每次改动 +1 -> 高亮/AI 失效判据
+120	  const std::string& path() const;  void setPath(std::string p);
+121	  Lang lang() const;                        // 由扩展名推断
+122	};
+123	```
+124	
+125	**撤销:逆操作日志 + 分组。**
+126	
+127	```cpp
+128	struct UndoOp   { bool isInsert; Pos at; std::string text; };
+129	struct UndoGroup{ std::vector<UndoOp> ops; Pos cursorBefore, cursorAfter;
+130	                  int64_t stamp; const char* label; };
+131	```
+132	
+133	- `insert` 记录 `{isInsert=true, at, text}`;`erase` 记录 `{isInsert=false, at=r.a, text=被删内容}`。
+134	- 撤销 = 倒序遍历组内 ops,施加逆操作,期间**挂起日志记录**(`journaling_ = false`),同时把该组压入 redo 栈。
+135	- 合并规则:同组内连续单字符插入,若位置相邻、间隔 < 800ms、label 相同,则并入当前组;回车、光标移动、保存、剪切行等结构性操作立刻关闭当前组。
+136	- 任何新改动清空 redo 栈。撤销栈上限 2000 组,超出丢最旧。
+137	- 一次用户动作 = 一个 `TextBuffer::Edit` 作用域,所以"接受 ghost 插入 8 行"是一次撤销就回退干净。
+138	
+139	### 2.2 光标 / 视口
