@@ -1,0 +1,14 @@
+# 编译产物
+*.o
+*.d
+cppide
+cppide-debug
+
+# 真实配置(含 API key)—— 只提交 config.sample.json
+config.json
+
+# flower 的运行记录:19MB 原始 transcript,不进版本库
+runs/
+
+# 工具输出的原始落盘,哈希命名的自动产物,不是记录
+.flower/spill/

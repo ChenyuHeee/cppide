@@ -1,0 +1,24 @@
+# desc: B3c —— run_output_limit 抬到 100MB,让整整 100MB 真的进到编辑器里,量峰值 RSS
+wait 600
+expect cppide
+rss 启动时
+send \x05
+expect 编译
+wait 20000
+rss 洪流进行中
+wait 25000
+rss 洪流结束
+expectlast 退出码
+nocorrupt
+send \x0c
+wait 1200
+cursorin 24 80
+# 100MB 之后编辑器还能不能跟上按键?
+bench 30 \x1b[B
+rss 结束
+send \x1b
+wait 300
+send \x18
+wait 500
+send y
+wait 3000

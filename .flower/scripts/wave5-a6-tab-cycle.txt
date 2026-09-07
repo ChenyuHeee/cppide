@@ -1,0 +1,70 @@
+# desc: A6 —— 面板聚焦时连按 Tab,标签真的在轮换(用面板内容判别,不靠颜色)
+# 注意 1:\s \xNN 之类的转义**只有 send 会解释**,expect/expectfrom 的参数是原样子串。
+# 注意 2:mark 必须放在"发按键"**之前** —— 它记的是此刻已收到的字节数,
+#         放在 wait 之后就把要断言的那一屏刷新给圈到 mark 前面去了(踩过)。
+# 判别方式:pty 抓到的纯文本里颜色属性已被滤掉,无法直接看"哪个标签是高亮的",
+#         所以改用**面板区显示的内容**当判据 —— 每个面板都先塞一段独一无二的文本。
+wait 600
+expect cppide
+# 1) 让【编译】与【运行】面板都有内容:Ctrl-E 编译并运行
+send \x05
+wait 5000
+expectlast 退出码
+# 2) 【输入】面板塞一个独一无二的标记
+send \x1b4
+wait 500
+send STDIN_MARKER_42
+wait 400
+send \x0c
+wait 600
+expectlast STDIN_MARKER_42
+# 3) 回到【编译】面板(Alt-1),从这里开始连按 Tab
+mark tab0
+send \x1b1
+wait 400
+send \x0c
+wait 800
+expectfrom $ c++
+# 4) Tab #1 -> 【运行】面板(内容里有程序输出与退出码)
+mark tab1
+send \x09
+wait 400
+send \x0c
+wait 800
+expectfrom HELLO_A6
+# 5) Tab #2 -> 【AI】面板(启动横幅)
+mark tab2
+send \x09
+wait 400
+send \x0c
+wait 800
+expectfrom Ctrl-T 切模式
+# 6) Tab #3 -> 【输入】面板(那个标记)
+mark tab3
+send \x09
+wait 400
+send \x0c
+wait 800
+expectfrom STDIN_MARKER_42
+# 7) Tab #4 -> 绕回【编译】面板
+mark tab4
+send \x09
+wait 400
+send \x0c
+wait 800
+expectfrom $ c++
+nocorrupt
+# 8) 再连按 9 次 Tab(2 圈多一点),只确认不崩、光标合法
+repeat 9 \x09
+wait 500
+send \x0c
+wait 700
+cursorin 24 80
+nocorrupt
+# 退出
+send \x1b
+wait 300
+send \x18
+wait 400
+send y
+wait 1000

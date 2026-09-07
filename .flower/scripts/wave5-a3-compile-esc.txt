@@ -1,0 +1,47 @@
+# desc: A3 —— 编译进行中按 Esc 终止编译作业(任何焦点下都生效)
+# 前置:一个 -O2 下要编 ~25s 的 60k 行文件。
+wait 600
+expect cppide
+# Ctrl-B 编译。此刻焦点在编辑区(编译成功不抢焦点),Esc 必须仍能终止。
+send \x02
+wait 1500
+expectlast 编译中
+# ---- 编译进行中:Esc 终止 ----
+mark before_esc
+send \x1b
+wait 1500
+expectfrom 已终止编译作业
+nocorrupt
+# 终止之后**不许**再冒出一条误导人的"编译失败"(旧作业的 CompileDone 已被丢弃)
+expectnot 编译失败
+# 面板里能看到那条中文说明(Alt-1 聚焦【编译】面板)
+send \x1b1
+wait 500
+send \x0c
+wait 600
+expectlast 编译已被用户按 Esc 终止
+# ---- 终止后编辑器照常可用,而且能再编译一次 ----
+# ★ 插入的必须是**注释 + 换行**:直接在第 1 行行首插标识符会把 #include 弄坏,
+#   第二次编译会在 56ms 内报 4 个错误结束,于是 Esc 根本没东西可终止(踩过)。
+send \x1b
+wait 300
+send //AFTER_ESC_OK\n
+wait 400
+send \x0c
+wait 600
+expectlast AFTER_ESC_OK
+cursorin 24 80
+# 再按一次 Ctrl-B:说明作业槽已经放开(不会卡在"已有作业在执行")
+mark second_compile
+send \x02
+wait 1500
+expectfrom 编译中
+send \x1b
+wait 1500
+expectfrom 已终止编译作业
+nocorrupt
+# ---- 退出(缓冲区已脏,走确认分支)----
+send \x18
+wait 500
+send y
+wait 1500

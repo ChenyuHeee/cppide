@@ -1,0 +1,426 @@
+// main.cpp —— 进程入口
+//
+// 启动顺序(architecture.md §10,顺序不能错):
+//   setlocale(LC_ALL,"")            必须早于 initscr(否则中文宽度全按 1 算)
+//   signal(SIGPIPE, SIG_IGN)        libcurl 与 runProcess 都需要
+//   装 endwin 安全网                 atexit + std::set_terminate + 致命信号
+//   解析 argv
+//   ConfigLoader::load
+//   HttpChat::globalInit()          必须在任何线程启动之前
+//   构造 App(内部 Ui::init,再按需启动 AiService 线程)
+//   run()
+//   App 析构 -> AiService/Runner 析构(close + join,绝不 detach)-> Ui 析构
+//   Ui::emergencyShutdown()(幂等 endwin 兜底)
+//   HttpChat::globalCleanup()
+//
+// ★ 本文件不 include <curses.h>:归一化键码与 doctor 报告都由 ui.cpp 提供。
+// ★ --help / --version / --print-config / --doctor 是**纯 stdout、非交互**的,
+//   绝不初始化 ncurses —— 这是无 tty 环境里唯一能验证本程序的入口。
+
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <clocale>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <string>
+#include <vector>
+
+#include "aihttp.h"
+#include "app.h"
+#include "config.h"
+#include "keys.h"
+#include "textbuf.h"
+#include "ui.h"
+#include "util.h"
+
+namespace {
+
+const char* const kVersion = "0.1.0";
+
+// ------------------------------------------------------------ endwin 安全网
+// 只调 Ui::emergencyShutdown()(内部只做 endwin,不碰堆对象)。
+// 绝不把用户的终端留在 raw + noecho 状态。
+extern "C" void cppideAtExit() { Ui::emergencyShutdown(); }
+
+extern "C" void cppideFatalSignal(int sig) {
+  Ui::emergencyShutdown();
+  // 恢复默认处理后重新 raise:退出码/core 行为与没装 handler 时一致。
+  std::signal(sig, SIG_DFL);
+  std::raise(sig);
+}
+
+void cppideTerminate() {
+  Ui::emergencyShutdown();
+  std::fputs("cppide: 未捕获的异常,已退出。\n", stderr);
+  std::abort();
+}
+
+void installSafetyNet() {
+  std::atexit(cppideAtExit);
+  std::set_terminate(cppideTerminate);
+  std::signal(SIGSEGV, cppideFatalSignal);
+  std::signal(SIGBUS, cppideFatalSignal);
+  std::signal(SIGABRT, cppideFatalSignal);
+}
+
+// ------------------------------------------------------------------- argv
+struct Args {
+  std::string config_path;   // --config <PATH>
+  std::string file;          // 位置参数
+  bool help = false;
+  bool version = false;
+  bool print_config = false;
+  bool doctor = false;
+};
+
+bool parseArgs(int argc, char** argv, Args& a, std::string& err) {
+  bool no_more_flags = false;
+  std::vector<std::string> positional;
+  for (int i = 1; i < argc; ++i) {
+    const std::string s = argv[i] ? argv[i] : "";
+    if (!no_more_flags && s == "--") {
+      no_more_flags = true;
+      continue;
+    }
+    if (!no_more_flags && s.size() >= 2 && s[0] == '-') {
+      if (s == "-h" || s == "--help") {
+        a.help = true;
+      } else if (s == "-V" || s == "--version") {
+        a.version = true;
+      } else if (s == "--print-config") {
+        a.print_config = true;
+      } else if (s == "--doctor") {
+        a.doctor = true;
+      } else if (s == "--config") {
+        if (i + 1 >= argc) {
+          err = "选项 --config 缺少参数。用法:cppide --config <配置文件路径>";
+          return false;
+        }
+        a.config_path = argv[++i];
+      } else if (util::startsWith(s, "--config=")) {
+        a.config_path = s.substr(std::strlen("--config="));
+        if (a.config_path.empty()) {
+          err = "选项 --config= 的值为空。用法:cppide --config <配置文件路径>";
+          return false;
+        }
+      } else {
+        err = "未知选项 " + s + "。请用 `cppide --help` 查看用法。";
+        return false;
+      }
+      continue;
+    }
+    positional.push_back(s);
+  }
+  if (positional.size() > 1) {
+    err = "一次只能打开一个文件(本编辑器只编译当前打开的单个文件),"
+          "但收到 " + std::to_string(positional.size()) + " 个:" +
+          util::join(positional, " ");
+    return false;
+  }
+  if (!positional.empty()) {
+    if (positional[0].empty()) {
+      err = "文件名为空。";
+      return false;
+    }
+    a.file = util::expandUser(positional[0]);
+  }
+  return true;
+}
+
+// -------------------------------------------------------------------- help
+void printHelp() {
+  std::printf(
+      "cppide %s —— 跑在终端里的 C/C++ 单文件编辑器(编辑 + 一键编译运行 + AI 辅助)\n"
+      "\n"
+      "用法:\n"
+      "  cppide [选项] [文件]\n"
+      "\n"
+      "  不给文件名则打开一个未命名的空缓冲区(Ctrl-O 会提示另存为)。\n"
+      "  给一个还不存在的路径,则当**新文件**打开(父目录必须存在),Ctrl-O 直接存盘。\n"
+      "  文件扩展名决定语言:.c 用 cc,.cpp/.cc/.cxx/.c++/.C 用 c++,\n"
+      "  .h/.hpp/.hh/.hxx/.h++/.hp 只做语法检查(-fsyntax-only)。\n"
+      "  除 .c(C)与 .C(C++)这一对之外,扩展名大小写不敏感(.CPP/.Hpp 都认)。\n"
+      "  只接受 C/C++ 扩展名;其它类型会被拒绝并给出提示。\n"
+      "\n"
+      "选项:\n"
+      "  --config <PATH>   指定配置文件(优先于 CPPIDE_CONFIG 与默认路径)\n"
+      "  --print-config    把示例配置打到 stdout(可直接重定向成配置文件)\n"
+      "  --doctor          自查:终端能力、配置解析结果、编译器是否找得到\n"
+      "  -h, --help        显示本帮助\n"
+      "  -V, --version     显示版本\n"
+      "\n"
+      "配置文件:\n"
+      "  默认路径:%s\n"
+      "  生成示例:cppide --print-config > 上面这个路径\n"
+      "  api_key 留空则只关闭 AI,编辑 / 编译 / 运行完全可用。\n"
+      "  环境变量 CPPIDE_API_KEY(或 DEEPSEEK_API_KEY)、CPPIDE_MODEL、\n"
+      "  CPPIDE_BASE_URL、CPPIDE_CONFIG 的优先级高于配置文件。\n"
+      "\n"
+      "快捷键:\n",
+      kVersion, ConfigLoader::defaultPath().c_str());
+  for (const std::string& ln : helpLines()) std::printf("  %s\n", ln.c_str());
+  std::printf(
+      "\n"
+      "说明:Ctrl-C / Ctrl-Z / Ctrl-S / Ctrl-Q / Ctrl-\\ 一律不绑定(终端流控与信号)。\n"
+      "      运行中的程序死循环时,在【运行】面板按 Esc 即可终止它。\n"
+      "      编译卡住时(模板爆炸等),任何焦点下按 Esc 都能终止编译作业。\n");
+}
+
+// ------------------------------------------------------------------ doctor
+// 在 PATH 里找可执行文件(不启动任何子进程)。prog 含 '/' 时直接测该路径。
+bool findInPath(const std::string& prog, std::string& full) {
+  if (prog.empty()) return false;
+  if (prog.find('/') != std::string::npos) {
+    if (::access(prog.c_str(), X_OK) == 0) {
+      full = prog;
+      return true;
+    }
+    return false;
+  }
+  const std::string path = util::envOr("PATH", "/usr/bin:/bin:/usr/local/bin");
+  for (const std::string& dir : util::split(path, ':')) {
+    if (dir.empty()) continue;
+    const std::string cand = util::joinPath(dir, prog);
+    if (::access(cand.c_str(), X_OK) == 0) {
+      full = cand;
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string yesNo(bool v) { return v ? "是" : "否"; }
+
+// 绝不打印 api_key 的值 —— 只说"已配置(已隐去)"或"未配置"。
+const char* apiKeyStateZh(const Config& c) {
+  return c.aiEnabled() ? "已配置(已隐去)" : "未配置(AI 功能关闭,编辑/编译/运行不受影响)";
+}
+
+std::string doctorReport(const Args& a, const Config& cfg, const std::string& cfg_err) {
+  std::string r;
+  r += "== cppide 自查(--doctor,非交互)==\n";
+  r += "版本: cppide ";
+  r += kVersion;
+  r += " (C++17)\n";
+
+  r += "\n[终端]\n";
+  r += "stdin 是 tty  : " + yesNo(::isatty(STDIN_FILENO) != 0) + "\n";
+  r += "stdout 是 tty : " + yesNo(::isatty(STDOUT_FILENO) != 0) + "\n";
+  // TERM / LANG / LC_ALL / ncurses 版本 / COLORS / COLOR_PAIRS / 宽字符能力
+  // 由 ui.cpp 通过 terminfo 查询给出(不 initscr,故无 tty 也能跑)。
+  r += Ui::doctorReport();
+  if (r.empty() || r.back() != '\n') r += "\n";
+  r += "(--doctor 本身不进入按键回显;想看实际键码请在真实终端里启动 cppide 后按 F1。)\n";
+
+  r += "\n[配置]\n";
+  const std::string want = a.config_path.empty() ? ConfigLoader::defaultPath()
+                                                 : util::expandUser(a.config_path);
+  r += "--config 指定 : " + (a.config_path.empty() ? std::string("(未指定)") : a.config_path) + "\n";
+  r += "查找路径      : " + (want.empty() ? std::string("(无法确定)") : want) + "\n";
+  r += "文件存在      : " + yesNo(!want.empty() && util::fileExists(want)) + "\n";
+  r += "实际加载自    : " + (cfg.source_path.empty() ? std::string("(全部使用内置默认值)")
+                                                    : cfg.source_path) + "\n";
+  r += "解析致命说明  : " + (cfg_err.empty() ? std::string("(无)") : cfg_err) + "\n";
+  r += "api_key       : " + std::string(apiKeyStateZh(cfg)) + "\n";
+  r += "model         : " + (cfg.model.empty()
+                                 ? std::string("(未配置 —— AI 功能显示\"未配置\",不发请求)")
+                                 : cfg.model) + "\n";
+  r += "chat url      : " + cfg.chatUrl() + "\n";
+  r += "stream        : " + yesNo(cfg.stream) + "\n";
+  r += "ghost 触发    : 停顿 " + std::to_string(cfg.ghost_delay_ms) + "ms,最小间隔 " +
+       std::to_string(cfg.ghost_min_interval_ms) + "ms,最多 " +
+       std::to_string(cfg.ghost_max_lines) + " 行\n";
+  r += "AI 超时       : 连接 " + std::to_string(cfg.ai_connect_timeout_ms) + "ms,总 " +
+       std::to_string(cfg.ai_timeout_ms) + "ms\n";
+  r += "tick_ms       : " + std::to_string(cfg.tick_ms) +
+       "   panel_height: " + std::to_string(cfg.panel_height) +
+       "   tab_width: " + std::to_string(cfg.tab_width) + "\n";
+  r += "stdin_file    : " + (cfg.stdin_file.empty() ? std::string("(用【输入】面板内容)")
+                                                    : cfg.stdin_file) + "\n";
+  if (cfg.warnings.empty()) {
+    r += "warnings      : (无)\n";
+  } else {
+    r += "warnings (" + std::to_string(cfg.warnings.size()) + " 条):\n";
+    for (const std::string& w : cfg.warnings) r += "  - " + w + "\n";
+  }
+
+  r += "\n[编译器]\n";
+  std::string full;
+  r += "cc  = " + cfg.cc + "  -> " + (findInPath(cfg.cc, full) ? full : std::string("未找到!")) + "\n";
+  r += "     cflags: " + util::join(cfg.cflags, " ") + "\n";
+  full.clear();
+  r += "cxx = " + cfg.cxx + "  -> " + (findInPath(cfg.cxx, full) ? full : std::string("未找到!")) + "\n";
+  r += "     cxxflags: " + util::join(cfg.cxxflags, " ") + "\n";
+  r += "compile_timeout_ms: " + std::to_string(cfg.compile_timeout_ms) +
+       "   run_timeout_ms: " + std::to_string(cfg.run_timeout_ms) + "\n";
+  r += "临时目录 TMPDIR   : " + util::tempDir() + "\n";
+
+  r += "\n[结论]\n";
+  bool cc_ok = findInPath(cfg.cc, full);
+  full.clear();
+  bool cxx_ok = findInPath(cfg.cxx, full);
+  if (!cc_ok || !cxx_ok) {
+    r += "- 编译器未找到:请安装 Xcode Command Line Tools(xcode-select --install),"
+         "或在配置里把 cc/cxx 改成实际路径。\n";
+  } else {
+    r += "- 编译与运行功能就绪。\n";
+  }
+  // AI 是否真的可用 = key 非空 **且** model 非空(model 无内置默认值)。
+  if (cfg.aiEnabled() && !cfg.model.empty()) {
+    r += "- AI 功能已启用。\n";
+  } else if (cfg.aiEnabled()) {
+    r += "- AI 功能未启用(model 为空:请按 DeepSeek 官方文档填写模型名);"
+         "编辑、编译、运行均不受影响。\n";
+  } else {
+    r += "- AI 功能未启用(api_key 为空);编辑、编译、运行均不受影响。\n";
+  }
+  return r;
+}
+
+// -------------------------------------------------------- 打开文件的前置检查
+// Wave 5 协调者裁决:**路径不存在不再是错误** —— 只要父目录存在且扩展名受支持,
+// 就按"新文件"打开(空缓冲区 + setPath,Ctrl-O 能直接保存出来)。
+// 仍然报错退出的四种情况:
+//   1) 传入的是目录;2) 父目录不存在;3) 文件存在但读不了;4) 扩展名不受支持。
+// 为什么不把 4) 也放过:本编辑器只服务 C/C++(需求边界),让 .py/.txt 悄悄打开
+// 会让"编译当前文件"这条主路径无从下手,不如在入口就说清楚。
+//
+// out_new_file 置 true 表示"这是一个还不存在的新文件"。
+bool checkOpenPath(const std::string& p, bool& out_new_file, std::string& err) {
+  out_new_file = false;
+  if (util::isDirectory(p)) {
+    err = p + " 是一个目录,不是文件。";
+    return false;
+  }
+  // 扩展名门槛对新旧文件一视同仁:langFromPath 是全工程判定语言的唯一入口。
+  if (TextBuffer::langFromPath(p) == Lang::Unknown) {
+    err = "不支持的文件类型:" + util::basename(p) + "\n"
+          "       cppide 只支持 C / C++:"
+          ".c / .C / .cpp / .cc / .cxx / .c++ / .h / .hpp / .hh / .hxx / .h++ / .hp\n"
+          "       (除 .c 与 .C 这一对外,大小写不敏感)。";
+    return false;
+  }
+  if (!util::fileExists(p)) {
+    const std::string dir = util::dirname(p);
+    if (!util::isDirectory(dir)) {
+      err = "目录不存在:" + dir + "(无法在其中新建 " + util::basename(p) + ")。\n"
+            "       请先 mkdir -p 该目录,或换一个已存在的目录。";
+      return false;
+    }
+    out_new_file = true;      // 父目录在 + 扩展名对 -> 当新文件开
+    return true;
+  }
+  // ★ 必须是普通文件。为什么:命名管道(mkfifo x.cpp)上的 open(O_RDONLY) 会
+  //   **一直阻塞**到有人写它 —— 实测 `cppide fifo.cpp` 会永久挂死在启动阶段,
+  //   连 endwin 安全网都跑不到。字符/块设备、套接字同理没有"当源码编辑"的意义。
+  {
+    struct stat st{};
+    if (::stat(p.c_str(), &st) == 0 && !S_ISREG(st.st_mode)) {
+      err = p + " 不是普通文件(命名管道 / 设备 / 套接字),无法当源码打开。";
+      return false;
+    }
+  }
+  std::string text, rerr;
+  if (!util::readFile(p, text, rerr)) {
+    err = "无法读取 " + p + ":" + rerr;
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // 1) locale 必须最先:util 的显示宽度与 ncurses 的宽字符输出都依赖它。
+  std::setlocale(LC_ALL, "");
+  // 2) SIGPIPE:libcurl 与 runProcess 写已关闭的管道时不能把进程打死。
+  std::signal(SIGPIPE, SIG_IGN);
+  // 3) endwin 安全网。
+  installSafetyNet();
+
+  // 4) argv。
+  Args args;
+  std::string perr;
+  if (!parseArgs(argc, argv, args, perr)) {
+    std::fprintf(stderr, "cppide: %s\n", perr.c_str());
+    return 2;
+  }
+  if (args.help) {
+    printHelp();
+    return 0;
+  }
+  if (args.version) {
+    std::printf("cppide %s\n", kVersion);
+    return 0;
+  }
+
+  // 5) 配置:load() 永不硬失败,问题全在 err/warnings 里。
+  std::string cfg_err;
+  Config cfg = ConfigLoader::load(args.config_path, cfg_err);
+  // --config 显式给出的路径同步进 CPPIDE_CONFIG:这样运行期任何再次调用
+  // ConfigLoader::defaultPath() 的地方(如 app.cpp 的"请在 <path> 填写 api_key"
+  // 提示)指的都是用户真正要求的那个文件,而不是默认路径。
+  if (!args.config_path.empty()) ::setenv("CPPIDE_CONFIG", args.config_path.c_str(), 1);
+
+  // 非交互命令:纯 stdout,不初始化 ncurses,直接退出。
+  if (args.print_config) {
+    // 输出必须是一份可直接重定向使用的合法 JSON(api_key 为空字符串)。
+    std::fputs(ConfigLoader::sampleJson().c_str(), stdout);
+    return 0;
+  }
+  if (args.doctor) {
+    std::fputs(doctorReport(args, cfg, cfg_err).c_str(), stdout);
+    return 0;
+  }
+
+  // 6) 打开文件的前置检查。不存在但父目录在、扩展名受支持 -> 按新文件打开。
+  bool new_file = false;
+  if (!args.file.empty()) {
+    std::string ferr;
+    if (!checkOpenPath(args.file, new_file, ferr)) {
+      std::fprintf(stderr, "cppide: %s\n", ferr.c_str());
+      return 2;
+    }
+  }
+  (void)new_file;   // App::init 自己再判一次"文件是否存在",不需要额外通道
+
+  // 7) 必须有交互式终端才能起 TUI。无 tty 时给清晰报错并退出(绝不崩、绝不挂死)。
+  if (!::isatty(STDIN_FILENO) || !::isatty(STDOUT_FILENO)) {
+    std::fprintf(stderr,
+                 "cppide: 当前环境不是交互式终端(stdin 是 tty:%s,stdout 是 tty:%s),"
+                 "无法启动全屏界面。\n"
+                 "       请在真实终端里运行;非交互场景可用:"
+                 "--help / --version / --print-config / --doctor。\n",
+                 ::isatty(STDIN_FILENO) ? "是" : "否",
+                 ::isatty(STDOUT_FILENO) ? "是" : "否");
+    return 3;
+  }
+
+  // 8) curl 全局初始化必须早于任何线程启动(AiService 的 worker 在 App 里起)。
+  HttpChat::globalInit();
+
+  int rc = 0;
+  std::string fatal;
+  {
+    App app(std::move(cfg), args.file);
+    std::string ierr;
+    if (!app.init(ierr)) {
+      fatal = ierr;
+      rc = 4;
+    } else {
+      rc = app.run();
+    }
+    // App 析构:成员逆序销毁 => AiService -> Runner(都是 close + join,绝不 detach)
+    //            -> ... -> Ui(endwin)。顺序正是 §10 要求的。
+  }
+  // 幂等兜底:即使 Ui 的析构路径被跳过,也不把终端留在 raw 状态。
+  Ui::emergencyShutdown();
+  HttpChat::globalCleanup();
+
+  if (!fatal.empty()) std::fprintf(stderr, "cppide: 初始化失败:%s\n", fatal.c_str());
+  return rc;
+}

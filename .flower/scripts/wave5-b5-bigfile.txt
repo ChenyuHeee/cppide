@@ -1,0 +1,56 @@
+# desc: B5 —— 5 万行大文件:滚动 / 跳到文件尾 / 中间连按 20 次回车,量单帧渲染耗时
+wait 1500
+expect cppide
+rss 打开5万行之后
+nocorrupt
+# ---- 首帧就位:状态栏里有文件名(由 .sh 传入,这里只认扩展名)----
+expectlast .cpp
+# ---- 单帧渲染耗时:120 次 ↓ ----
+bench 120 \x1b[B
+# ---- 单帧渲染耗时:60 次 PgDn(每次跨一屏,重算高亮最贵)----
+bench 60 \x1b[6~
+# ---- 跳到文件尾(Alt-> = ESC >)----
+# ★ Alt-> 之后光标停在最后一行行尾(第 54 列),编辑区已**横向滚动**,
+#   屏幕上只剩行尾片段,断言整行内容会失败。所以先按 Home 把视口拉回列 1。
+#   (也别断言具体行号:那会把断言绑死在样本文件的行数上 —— 踩过。)
+mark to_end
+send \x1b>
+wait 600
+send \x1bOH
+wait 400
+send \x0c
+wait 1200
+expectfrom BIGFILE_OK
+nocorrupt
+rss 跳到文件尾
+# ---- 跳到中间(Ctrl-G 25000 Enter)----
+mark to_mid
+send \x07
+wait 400
+send 25000\n
+wait 800
+send \x0c
+wait 1200
+expectfrom 25000
+# ---- 在中间连按 20 次回车 ----
+bench 20 \n
+wait 500
+send \x0c
+wait 1200
+cursorin 24 80
+nocorrupt
+rss 连按20次回车之后
+# ---- 再滚一段,确认没有退化 ----
+bench 60 \x1b[A
+bench 30 \x1b[5~
+# ---- 保存(5 万行落盘)----
+mark save
+send \x0f
+wait 3000
+expectfrom 已保存
+rss 保存之后
+# ---- 退出 ----
+send \x18
+wait 800
+send y
+wait 3000

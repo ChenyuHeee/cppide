@@ -1,0 +1,52 @@
+# desc: B4 —— AI 异常态下"编辑/编译照常可用、输入不卡、有中文提示"的通用脚本
+# 由 wave5-b4-ai-states.sh 分别用三份配置跑:无配置 / 错 key(401)/ 无网络(连不上)
+wait 800
+expect cppide
+# 1) 切到写代码模式(Ctrl-T)并打字 -> 触发自动补全请求
+send \x14
+wait 400
+# ★ 只插注释:一旦插入真代码(比如再来一个 int main),编译必然失败,
+#   第 6 步"编译+运行照常"就测不到了(踩过)。
+send //ai_probe_line\n
+wait 400
+send //ai_probe_line2\n
+wait 3000
+# 2) 再按 Ctrl-A 显式请求一次(练习模式会开提问行,写代码模式直接发)
+send \x01
+wait 4000
+# 3) 【AI】面板必须有中文提示(具体断言由 .sh 里传的 grep 做)
+send \x1b3
+wait 500
+send \x0c
+wait 1000
+nocorrupt
+# 4) 关键:输入**不卡**。连按 60 次下箭头,量单帧耗时
+#    ★ 必须先 Esc 取消【AI】面板焦点,否则按键都被面板吃掉。
+send \x1b
+wait 300
+bench 60 \x1bOB
+# 5) 关键:编辑照常 —— 另起一行打字,立刻可见
+#    (先 Home + 上一行,保证插到一行的开头而不是把已有代码劈开)
+send \x1bOH
+wait 200
+send //EDIT_STILL_WORKS\n
+wait 500
+send \x0c
+wait 900
+expectlast EDIT_STILL_WORKS
+# 6) 关键:编译 + 运行照常 —— 能看到程序输出与退出码
+send \x05
+wait 8000
+expectlast 退出码
+# ★ 断言的必须是"只有真跑起来才会出现"的字符串:AI_RUN_42 是程序在运行期
+#   用 printf("%s_%d") 拼出来的,源码里不存在这个字面量,所以它不可能来自
+#   编辑区的源码回显。
+expectlast AI_RUN_42
+nocorrupt
+cursorin 24 80
+rss 结束
+# 7) 退出
+send \x18
+wait 500
+send y
+wait 1500

@@ -1,0 +1,40 @@
+# desc: 回归 —— ESC[A/B/C/D(普通模式)与 ESC O A/B/C/D(DECCKM)都必须是方向键
+# 修 ui.cpp::registerCsiCursorKeys 之前:发 \e[B 会往缓冲区插一个字母 'B'(光标变 1:4)。
+# 需要一个至少 300 行的样本文件(见 wave5-verify.sh 里生成的 keys.cpp)。
+wait 800
+expect cppide
+send \x0c
+wait 500
+mark m1
+# 普通(非 DECCKM)模式的下箭头 x3 -> 必须是 1:1 -> 4:1,而不是 1:4
+send \x1b[B\x1b[B\x1b[B
+wait 600
+send \x0c
+wait 700
+expectfrom 4:1
+mark m2
+# DECCKM 模式的下箭头 x2 -> 6:1
+send \x1bOB\x1bOB
+wait 600
+send \x0c
+wait 700
+expectfrom 6:1
+mark m3
+# PgDn / PgUp(这两个序列与 DECCKM 无关,一直是 ESC[6~ / ESC[5~)
+send \x1b[6~
+wait 600
+send \x0c
+wait 700
+expectfrom 17:1
+mark m4
+send \x1b[5~
+wait 600
+send \x0c
+wait 700
+expectfrom 6:1
+# 缓冲区**必须没被改脏**:方向键一个字母都不许插进去
+# (状态栏在脏的时候显示 "keys.cpp*";标签栏的 * 是未读标记,不能拿来判断)
+expectnot keys.cpp*
+send \x18
+wait 500
+wait 800

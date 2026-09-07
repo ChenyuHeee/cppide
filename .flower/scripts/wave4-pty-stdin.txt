@@ -1,0 +1,22 @@
+# 附加验收:【输入】面板喂 stdin + Ctrl-E 编译并运行 + 看到 stdout 与退出码
+# 另外验证 AI 未配置时 Ctrl-A 只给面板消息(编辑/编译/运行照常)
+expect 练习模式
+expect io.cpp
+# Alt-4 聚焦【输入】面板,输入 21
+send \e4
+wait 400
+send 21
+wait 400
+mark TYPED
+# Ctrl-E:编译并运行
+send \x05
+wait 4000
+expectfrom n=42
+expectfrom 退出码 0
+mark RAN
+# Ctrl-A:AI 未配置 -> 只是面板消息,不崩
+send \x01
+wait 600
+expectfrom AI 未配置
+send \x18
+wait 600

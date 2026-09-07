@@ -1,0 +1,43 @@
+# desc: B2 —— 死循环程序:Ctrl-E 编译并运行 while(1),编辑器仍响应按键,Esc 能终止
+# 前置:配置里 run_timeout_ms 要给大一点(如 60000),否则超时会先兜底,测不到 Esc。
+wait 500
+expect cppide
+# Ctrl-E = 编译并运行
+send \x05
+expect 编译
+# 编译 + 启动运行(g++ 冷启动给足时间)
+wait 6000
+expectlast 运行中
+# ---- 关键 1:子进程死循环期间,编辑器**仍然响应按键** ----
+# 此刻焦点在【运行】面板(doRun 会主动聚焦),Alt-3 切到【AI】面板证明按键有效
+send \x1b3
+wait 400
+expectlast AI
+# 打字也要有反应。★ 必须先从【AI】面板(而不是【运行】面板)按 Esc 取消焦点:
+#   在【运行】面板里按 Esc 会直接终止子进程(§4.2 第三道防线),就测不到"打字"了。
+mark before_typing
+send \x1b
+wait 300
+send ALIVE_WHILE_SPINNING
+wait 400
+send \x0c
+wait 500
+expectlast ALIVE_WHILE_SPINNING
+nocorrupt
+rss 死循环运行中
+# ---- 关键 2:回到【运行】面板按 Esc,终止死循环 ----
+send \x1b2
+wait 400
+send \x1b
+wait 1500
+expectlast 已终止运行中的程序
+nocorrupt
+# 终止后编辑器照常可用
+send \x0c
+wait 400
+cursorin 24 80
+# ---- 退出 ----
+send \x18
+wait 400
+send y
+wait 1000

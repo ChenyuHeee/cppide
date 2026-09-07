@@ -1,0 +1,57 @@
+# desc: B1 —— 80x24 / 60x16 布局 + 20x5 <-> 200x60 猛拉缩放 200 次,不崩/不花屏/光标合法
+# 用法(rows/cols 由驱动器命令行给,这里只做尺寸切换):
+#   pty5 24 80 wave5-b1-resize.txt <out> -- ./cppide <file>
+wait 500
+expect cppide
+# ---- 80x24 基线 ----
+expectlast 编译
+expectlast 运行
+send int\smain()\s{\n
+wait 200
+cursorin 24 80
+nocorrupt
+# ---- 缩到 60x16(架构 §8.1 规定的最小可用尺寸)----
+resize 16x60
+wait 300
+cursorin 16 60
+nocorrupt
+expectlast 编译
+# ---- 猛拉缩放 A:20x5 <-> 200x60,200 次,尽可能快(走 KEY_RESIZE 合并路径)----
+resizestorm 200 5x20 60x200
+wait 500
+# 风暴之后停在 60x200,再按一次 Ctrl-L 强制全量重画
+send \x0c
+wait 400
+cursorin 60 200
+nocorrupt
+expectlast 编译
+# ---- 猛拉缩放 B:同样 200 次,但每步硬等 12ms,保证每一帧都真的画完 ----
+resizestorm 200 5x20 60x200 12
+wait 500
+send \x0c
+wait 400
+cursorin 60 200
+nocorrupt
+expectlast 编译
+# ---- 编辑器仍然响应按键:打一行字,Ctrl-L 全量重画后应当整串可见 ----
+# (不 Ctrl-L 的话 ncurses 只增量写单个字符,过滤后的屏幕文本里每个字母
+#  之间都夹着转义序列变成的空格,整串永远匹配不上 —— 这是断言方式的坑,不是 bug)
+send xyzzy_after_storm
+wait 300
+send \x0c
+wait 400
+expectlast xyzzy_after_storm
+nocorrupt
+# ---- 再切回 24x80 并确认还能正常画 ----
+resize 24x80
+wait 300
+send \x0c
+wait 300
+cursorin 24 80
+nocorrupt
+rss B1结束
+# ---- 退出 ----
+send \x18
+wait 300
+send y
+wait 800

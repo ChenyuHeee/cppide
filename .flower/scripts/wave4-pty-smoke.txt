@@ -1,0 +1,29 @@
+# 验收 5:端到端冒烟
+# 输入中文 -> Ctrl-O 保存 -> Ctrl-B 编译(故意写错) -> Ctrl-N 跳诊断 -> Ctrl-T 切模式 -> Ctrl-X 退出
+expect 练习模式
+expect t.cpp
+send //\s中文注释
+wait 400
+# ncurses 是增量刷屏,逐字输入时整行不会连续出现在字节流里;Ctrl-L 强制全量重绘再断言
+send \x0c
+wait 500
+expect // 中文注释
+send \r
+wait 300
+send \x0f
+expect 已保存
+mark AFTER_SAVE
+send \x02
+wait 2500
+expectfrom zzz_undeclared
+expectfrom 错误
+mark AFTER_COMPILE
+send \x0e
+wait 700
+expectfrom 第 4 行
+mark AFTER_JUMP
+send \x14
+wait 500
+expectfrom 写代码模式
+send \x18
+wait 500

@@ -1,0 +1,28 @@
+# 验收 6:运行死循环程序 —— 编辑器不挂死 + Esc 能终止
+expect 练习模式
+expect loop.cpp
+mark BOOT
+# Ctrl-R:自动编译后运行
+send \x12
+wait 3000
+expectfrom 运行中
+mark RUNNING
+# 死循环还在跑:换面板证明 UI 仍在响应按键(Alt-3 聚焦 AI 面板)
+send \e3
+wait 600
+expectfrom AI 未配置
+mark PANEL_SWITCHED
+# 回到【运行】面板(Alt-2),再按 Esc 终止
+send \e2
+wait 500
+send \e
+wait 1200
+expectfrom 已终止运行中的程序
+expectfrom SIGKILL
+mark KILLED
+# 终止后仍然响应按键:Ctrl-T 切模式
+send \x14
+wait 500
+expectfrom 写代码模式
+send \x18
+wait 600

@@ -1,0 +1,50 @@
+# desc: B6 —— 打开二进制 / 含非法 UTF-8 的文件:不崩、不花屏、能退出
+# 需求边界之外(只承诺 C/C++ 源码),但绝不允许崩溃或把终端弄花。
+wait 1500
+expect cppide
+rss 打开之后
+# 屏幕上不许出现非法 UTF-8 字节(那正是"花屏"的成因)
+nocorrupt
+# 状态栏还在(说明渲染没被冲掉)
+expectlast F1帮助
+# ---- 滚动:让所有脏字节都过一遍渲染器 ----
+bench 60 \x1bOB
+nocorrupt
+bench 30 \x1b[6~
+nocorrupt
+# ---- 跳到文件尾再跳回来 ----
+send \x1b>
+wait 800
+send \x0c
+wait 1000
+nocorrupt
+send \x1b<
+wait 800
+send \x0c
+wait 1000
+nocorrupt
+# ---- 猛缩放:脏字节 + 换行重算一起上 ----
+resizestorm 60 5x20 60x200 10
+wait 400
+resize 24x80
+wait 400
+send \x0c
+wait 800
+cursorin 24 80
+nocorrupt
+# ---- 编辑一下(往脏字节旁边插字符)----
+send xyz
+wait 400
+send \x0c
+wait 800
+nocorrupt
+rss 结束
+# ---- 能正常退出(不保存)----
+send \x18
+wait 600
+send n
+wait 400
+send \x18
+wait 600
+send y
+wait 1500

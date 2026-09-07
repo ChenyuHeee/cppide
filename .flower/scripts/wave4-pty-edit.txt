@@ -1,0 +1,37 @@
+# 附加验收:提示行(Ctrl-G / Ctrl-F)、撤销、帮助浮层、面板折叠 —— 只要不崩且有可见反馈
+expect 练习模式
+send \x07
+wait 400
+expect 跳到行号
+send 3\r
+wait 400
+expect 已跳到第 3 行
+send \x06
+wait 400
+expect 查找
+send main\r
+wait 500
+expect 找到:main
+mark FOUND
+# Ctrl-U:没有可撤销的操作(刚打开文件)
+send \x15
+wait 400
+expectfrom 没有可撤销
+# F1 帮助浮层(xterm 下 F1 = ESC O P)
+send \eOP
+wait 600
+expectfrom cppide 快捷键
+# Esc 关闭帮助,Alt-0 折叠面板,Ctrl-L 重绘
+send \e
+wait 300
+send \e0
+wait 300
+send \x0c
+wait 400
+mark AFTER_UI
+# 仍然响应:Ctrl-T 切模式
+send \x14
+wait 400
+expectfrom 写代码模式
+send \x18
+wait 600

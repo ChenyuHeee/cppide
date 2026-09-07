@@ -1,0 +1,45 @@
+# desc: A2 —— 不存在的路径按新文件打开:状态栏提示"新文件"、Ctrl-O 真的创建出文件、能编译运行
+wait 800
+expect cppide
+# 1) 状态栏/AI 面板必须明确说这是个新文件
+expectlast 新文件
+# 2) 文件名后面挂着"(新文件)"标记(临时状态栏消息会过期,这个不会)
+send \x0c
+wait 700
+expectlast (新文件)
+nocorrupt
+# 3) 打一段能编译的代码
+send #include\s<cstdio>\n
+wait 300
+send int\smain()\s{\n
+wait 300
+send std::printf("NEWFILE_RAN\\n");\n
+wait 300
+send return\s0;\n
+wait 300
+send }\n
+wait 400
+send \x0c
+wait 800
+expectlast NEWFILE_RAN
+# 4) Ctrl-O 保存 -> 必须提示"已新建并保存",并且标记消失
+mark save
+send \x0f
+wait 1500
+expectfrom 已新建并保存
+mark after_save
+send \x0c
+wait 800
+# 必须用 expectnotfrom:expectnot 查整段历史,保存之前的帧里"(新文件)"本来就在。
+expectnotfrom (新文件)
+nocorrupt
+# 5) 编译 + 运行:证明这个新建出来的文件是真的可用源码
+mark run
+send \x05
+wait 8000
+expectfrom 退出码
+nocorrupt
+cursorin 24 80
+# 6) 退出(已保存,不该再弹确认)
+send \x18
+wait 1200

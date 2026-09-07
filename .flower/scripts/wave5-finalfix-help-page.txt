@@ -1,0 +1,118 @@
+# desc: F1 帮助浮层用 PgDn/PgUp/↓/↑ 翻页(Ui::scrollHelp)+ 退化尺寸不崩
+#
+# ★ 为什么断言的是"该页独有的内容"而不是"第 N/4 页"这个字符串:
+#   ncurses 只重发**变化了的单元格**。翻页时标题/页脚里唯一变的就是那一位数字,
+#   所以流里只会出现一个孤零零的 "2",整串 "第 2/4 页" 再也不会出现。
+#   (踩过:第一版脚本按页码断言,4 条全 FAIL,而实际翻页是好的。)
+# ★ 本脚本必须在**新起的 cppide 进程**里跑:help_page_ 初值为 0,
+#   所以"打开就是第 1/4 页"是确定的;混在别的脚本后面则起始页号不确定。
+# 用法(样本文件里要有 PAGEPROBE_MARKER):见 wave5-finalfix-verify.sh
+wait 1200
+expect cppide
+# ---------------- 打开:第 1/4 页,页脚要写明两种翻页方式 ----------------
+mark open
+send \x1bOP
+wait 900
+expectfrom cppide 帮助
+expectfrom 第 1/4 页
+expectfrom PgDn/PgUp
+expectfrom 再按 F1 也翻页
+expectfrom Esc 关闭
+expectfrom 左移一个字符
+nocorrupt
+# ---------------- PgDn:1 -> 2 -> 3 -> 4 -> 回绕到 1 ----------------
+mark d1
+send \x1b[6~
+wait 900
+expectfrom ── 文件 / 编译 / 运行 ──
+expectfrom 剪切当前行
+mark d2
+send \x1b[6~
+wait 900
+expectfrom ── AI ──
+expectfrom 聚焦【编译】面板
+mark d3
+send \x1b[6~
+wait 900
+expectfrom 聚焦【AI】面板
+expectfrom 切换到下一个面板标签
+nocorrupt
+# 最后一页再按 PgDn -> 回绕第 1 页(不越界、不崩)
+mark d4
+send \x1b[6~
+wait 900
+expectfrom 左移一个字符
+expectfrom ── 移动 ──
+nocorrupt
+# ---------------- PgUp:1 -> 4 -> 3(反向,且负页码不越界) ----------------
+mark u1
+send \x1b[5~
+wait 900
+expectfrom 聚焦【AI】面板
+mark u2
+send \x1b[5~
+wait 900
+expectfrom ── AI ──
+nocorrupt
+# ---------------- ↓ / ↑ 也翻页 ----------------
+mark a1
+send \x1b[B
+wait 900
+expectfrom 聚焦【AI】面板
+mark a2
+send \x1b[A
+wait 900
+expectfrom ── AI ──
+nocorrupt
+# ---------------- 翻页期间浮层一直开着;Esc 才关 ----------------
+# 上面十次翻页键一次都没把浮层关掉 —— 否则这里的 Esc 会被编辑区吃掉,
+# 而 Ctrl-L 之后就看不到"F1帮助"重新出现。
+mark close
+send \x1b
+wait 900
+send \x0c
+wait 900
+expectfrom F1帮助
+expectfrom PAGEPROBE_MARKER
+cursorin 24 80
+# 翻页键一个字都不许写进缓冲区(脏标记 * 不许出现)
+expectnot pageprobe.cpp*
+nocorrupt
+# ---------------- 退化尺寸:5 行 x 20 列 ----------------
+resize 5x20
+wait 700
+send \x1bOP
+wait 700
+send \x1b[6~
+wait 500
+send \x1b[5~
+wait 500
+send \x1b[B
+wait 500
+nocorrupt
+send \x1b
+wait 500
+# ---------------- 退化尺寸:20 行 x 5 列 ----------------
+resize 20x5
+wait 700
+send \x1bOP
+wait 700
+send \x1b[6~
+wait 500
+send \x1b[5~
+wait 500
+nocorrupt
+send \x1b
+wait 500
+# ---------------- 回到 24x80:必须活着且光标合法 ----------------
+resize 24x80
+wait 800
+send \x0c
+wait 900
+cursorin 24 80
+expectfrom F1帮助
+nocorrupt
+# ---------------- 退出 ----------------
+send \x18
+wait 700
+wait 900

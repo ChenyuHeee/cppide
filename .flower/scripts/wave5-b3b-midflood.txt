@@ -1,0 +1,19 @@
+# desc: B3b —— 1.5MB 输出(超 run_output_limit 但不触发 hard_kill):被截断且退出码可见
+wait 600
+expect cppide
+send \x05
+expect 编译
+wait 6000
+expectlast 退出码
+rss 1.5MB输出后
+nocorrupt
+send \x0c
+wait 700
+expectlast 截断
+cursorin 24 80
+send \x1b
+wait 300
+send \x18
+wait 400
+send y
+wait 1200

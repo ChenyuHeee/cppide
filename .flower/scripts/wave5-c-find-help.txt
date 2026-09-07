@@ -1,0 +1,142 @@
+# desc: 任务 C —— Ctrl-F 查找 与 F1 帮助浮层实测(§8.2)
+# 样本文件里有三处 NEEDLE_TARGET(第 5 / 40 / 120 行),外加一个不存在的串。
+wait 1000
+expect cppide
+# ---------------- Ctrl-F 查找 ----------------
+# 1) Ctrl-F 打开提示行,标签必须是中文"查找:"
+mark find_open
+send \x06
+wait 600
+expectfrom 查找
+# 2) 输入 needle + Enter -> 光标跳到第 5 行
+send NEEDLE_TARGET\n
+wait 700
+send \x0c
+wait 900
+expectfrom 找到
+expectfrom 5:5
+# 3) Ctrl-N = 下一处(无编译诊断时退化为"查找下一处")-> 第 40 行
+mark next1
+send \x0e
+wait 600
+send \x0c
+wait 900
+expectfrom 40:5
+# 4) 再一次 -> 第 120 行
+mark next2
+send \x0e
+wait 600
+send \x0c
+wait 900
+expectfrom 120:5
+# 5) 再一次 -> 回绕到第 5 行(find 自动回绕一次)
+mark next3
+send \x0e
+wait 600
+send \x0c
+wait 900
+expectfrom 5:5
+# 6) Ctrl-P = 上一处 -> 回到 120 行
+mark prev1
+send \x10
+wait 600
+send \x0c
+wait 900
+expectfrom 120:5
+# 7) 找一个不存在的串 -> 中文"未找到"
+mark notfound
+send \x06
+wait 500
+send THIS_STRING_IS_NOT_IN_THE_FILE\n
+wait 800
+expectfrom 未找到
+# 8) Ctrl-F 之后按 Esc 取消提示行,不改光标
+mark cancel
+send \x06
+wait 500
+send \x1b
+wait 600
+send \x0c
+wait 900
+expectfrom 120:5
+nocorrupt
+# ---------------- F1 帮助浮层 ----------------
+# 9) F1 打开:标题 + 页码 + 页脚都要在
+mark help_open
+send \x1bOP
+wait 900
+expectfrom cppide 帮助
+expectfrom 页
+expectfrom 再按 F1 也翻页
+nocorrupt
+# 9b) 连按 F1 把每一页都翻一遍(浮层是"任意键关闭 + 重开即下一页"),
+#     全部键位必须在这几页里出现过。80x24 下共 4 页,这里翻 6 次保证绕满。
+mark help_pages
+repeat 6 \x1bOP\x1bOP
+wait 1200
+send \x0c
+wait 600
+expectfrom Ctrl-O
+expectfrom Ctrl-B
+expectfrom Ctrl-T
+expectfrom Alt-1
+expectfrom Ctrl-C
+expectfrom 终止编译作业
+nocorrupt
+# 10) 关掉浮层 -> 状态栏回来、编辑区内容重新可见
+#     ★ 不能靠"再按一次 F1"来数开关奇偶:一次 write 里连发两个 ESC O P 时,
+#       ncurses 有可能只当一次按键(escdelay/同 tick 合并),实测 12 次 F1 之后
+#       浮层是**开着**的(第 4/4 页)。用 Ctrl-L 收尾最稳:浮层开着时它作为
+#       "任意键"把浮层关掉,浮层关着时它只是强制重绘 —— 连按两次必然是
+#       "已关闭 + 已全量重画"。
+mark help_close
+send \x0c
+wait 900
+send \x0c
+wait 900
+expectfrom NEEDLE_TARGET
+expectfrom F1帮助
+# 11) F1 打开、Esc 关闭
+mark help_esc
+send \x1bOP
+wait 800
+expectfrom cppide 帮助
+send \x1b
+wait 800
+send \x0c
+wait 900
+expectfrom F1帮助
+nocorrupt
+# 12) 帮助浮层在 60x16(最小可用尺寸)下也不许崩、不许越界
+resize 16x60
+wait 500
+send \x1bOP
+wait 900
+nocorrupt
+# ★ 浮层开着时 ui.cpp 走 curs_set(0)+wmove(0,0),不一定发新的 CUP,
+#   所以 cursorin 必须在**关掉浮层之后**测。
+send \x1b
+wait 600
+send \x0c
+wait 800
+cursorin 16 60
+resize 24x80
+wait 500
+send \x0c
+wait 800
+cursorin 24 80
+nocorrupt
+# 13) 帮助浮层打开时任意键关闭(且不许改缓冲区)
+send \x1bOP
+wait 800
+send k
+wait 800
+send \x0c
+wait 900
+expectfrom F1帮助
+# 缓冲区不许变脏(帮助浮层吃掉了那个 k)
+expectnot findhelp.cpp*
+# ---------------- 退出 ----------------
+send \x18
+wait 700
+wait 800

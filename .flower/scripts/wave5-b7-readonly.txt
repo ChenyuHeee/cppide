@@ -1,0 +1,42 @@
+# desc: B7 —— 只读文件保存失败 / 目标目录不可写:给中文错误提示、不崩、不丢数据
+# 以非 root 身份跑(root 能写只读文件),由 wave5-verify.sh 用 setpriv 拉起。
+wait 1000
+expect cppide
+# 打字改脏
+send //B7_UNSAVED_EDIT\n
+wait 500
+send \x0c
+wait 900
+expectlast B7_UNSAVED_EDIT
+# ---- Ctrl-O 保存:必须失败并给出中文提示 ----
+mark save_attempt
+send \x0f
+wait 1500
+expectfrom 保存失败
+nocorrupt
+# ---- 关键:不丢数据 —— 刚打的那行还在,而且状态栏仍标记为脏 ----
+send \x0c
+wait 900
+expectlast B7_UNSAVED_EDIT
+expectlast *
+# ---- 再试一次另存到一个不可写目录:同样要中文报错、不崩 ----
+mark saveas
+send \x0f
+wait 1200
+send \x0c
+wait 800
+expectfrom 保存失败
+nocorrupt
+# ---- 编辑器仍然可用 ----
+send //STILL_ALIVE\n
+wait 500
+send \x0c
+wait 900
+expectlast STILL_ALIVE
+cursorin 24 80
+# ---- 退出(有未保存修改 -> 确认框 -> y 强制退)----
+send \x18
+wait 700
+expectlast 未保存
+send y
+wait 1500

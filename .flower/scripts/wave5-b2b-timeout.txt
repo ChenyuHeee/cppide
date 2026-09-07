@@ -1,0 +1,24 @@
+# desc: B2b —— 死循环程序的 run_timeout_ms 兜底路径:不按任何键,超时后自动被杀
+# 前置:配置里 run_timeout_ms = 3000。
+wait 500
+expect cppide
+send \x05
+expect 编译
+# 编译 + 启动,然后**什么都不按**,等 timeout 兜底(3s + 余量)
+wait 12000
+# proc.cpp 超时后 kill(-pgid, SIGTERM) -> 200ms -> SIGKILL;面板里能看见被信号终止
+expectlast 超时
+nocorrupt
+# 兜底之后编辑器照常可用
+send \x1b
+wait 300
+send AFTER_TIMEOUT_OK
+wait 400
+send \x0c
+wait 500
+expectlast AFTER_TIMEOUT_OK
+cursorin 24 80
+send \x18
+wait 400
+send y
+wait 1000

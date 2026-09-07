@@ -1,0 +1,40 @@
+# desc: B3 —— 输出 100MB 的程序:编辑器不挂死、面板被裁剪、内存不爆(记录峰值 RSS)
+wait 600
+expect cppide
+rss 启动时
+send \x05
+expect 编译
+# 编译 + 运行 + 排空。100MB 输出全部要在 run_output_limit 之内被截断。
+wait 4000
+rss 输出洪流刚开始
+wait 8000
+rss 输出洪流中
+wait 8000
+# ★ 实测结论:100MB 会先撞上 proc.cpp 的 hard_kill_bytes(= max(8MB, 4×run_output_limit)),
+#   子进程在 11ms 内就被 SIGKILL 掉了 —— 这正是 §4.2 防"输出洪流挂死编辑器"的设计,
+#   所以面板里看到的是"已终止 · 信号 SIGKILL · 输出已截断",**不是**退出码。
+expectlast 输出已截断
+rss 运行结束
+nocorrupt
+# 面板必须给出"被截断"的可见说明(architecture §4.2 / proc.cpp truncated)
+send \x1b2
+wait 500
+send \x0c
+wait 800
+expectlast 截断
+# ---- 洪流之后编辑器照常响应 ----
+send \x1b
+wait 300
+send //FLOOD_SURVIVED\n
+wait 400
+send \x0c
+wait 700
+expectlast FLOOD_SURVIVED
+cursorin 24 80
+rss 结束
+# 单帧渲染耗时:洪流之后再按 40 次方向键,看还跟不跟得上
+bench 40 \x1b[B
+send \x18
+wait 400
+send y
+wait 1500

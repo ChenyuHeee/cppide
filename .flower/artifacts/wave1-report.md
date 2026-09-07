@@ -1,0 +1,139 @@
+# Wave 1 报告 —— Makefile + 全部头文件 + mailbox.h 实现
+
+日期:2026-09-06 · 环境:Debian trixie/aarch64,g++ 14.2.0,make 4.4.1,ncurses 6.5(ncursesw),libcurl 8.14.1
+
+## 1. 产出文件
+
+| 文件 | 说明 |
+|---|---|
+| `/work/Makefile` | 照 architecture.md §11,Linux 分支 `-lncursesw -lcurl -lpthread` |
+| `/work/src/util.h` | 字符串/路径/文件/时间/UTF-8/显示宽度(namespace `util`) |
+| `/work/src/json.h` | `mj::Value` 极简 JSON |
+| `/work/src/mailbox.h` | `Mailbox<T>` —— **本 wave 已完整实现**(header-only) |
+| `/work/src/config.h` | `Config` + `ConfigLoader` |
+| `/work/src/textbuf.h` | `Pos/Range/Lang/UndoOp/UndoGroup/TextBuffer` |
+| `/work/src/highlight.h` | `Tok/ST_*/Span/Highlighter/HighlightCache` |
+| `/work/src/proc.h` | `ProcSpec/ProcOutcome/ProcResult/runProcess/JobKind/Runner` |
+| `/work/src/build.h` | `DiagSev/Diag/CompileOutcome/Builder` |
+| `/work/src/aihttp.h` | `ChatMessage/ChatRequest/ChatResponse/SseParser/HttpChat` + 3 个纯解析函数 |
+| `/work/src/ai.h` | `AiMode/AiSink/AiState/EvKind/AppEvent/AiRequest/AiService` + `aiprompt` |
+| `/work/src/editor.h` | `Viewport/Ghost/Editor` |
+| `/work/src/panel.h` | `PanelId/PanelLine/VisualLine/Panel/StdinBuffer` |
+| `/work/src/keys.h` | 归一化键码 + `Action` + `Binding` |
+| `/work/src/ui.h` | `Rect/Layout/Theme/Ui`(**不含 curses.h**) |
+| `/work/src/app.h` | `PromptKind/AppModel/App` |
+| `/work/.flower/scripts/wave1-verify.sh` | 可复用验收脚本(5 步全绿) |
+
+## 2. 验收结果
+
+```
+=== 1. make check-headers ===            15/15 通过(每个头 -fsyntax-only,零 warning)
+=== 2. 全头合并 TU(正序+倒序 include)=== 编译通过,附 12 条 static_assert
+=== 3. curses 宏共存 ===                  NCURSES_NOMACROS 下通过;反证:不加则编不过
+=== 4. Mailbox 并发功能测试 ===            40000 条双生产者 FIFO / waitPop 超时 / close 唤醒 / close 后排空
+=== 5. 消毒器 ===                         TSan 本机不可用(ASLR),ASan+UBSan 连跑 20 轮干净
+```
+
+复跑命令:`bash /work/.flower/scripts/wave1-verify.sh`(退出码 0 = 全绿)。
+
+`make`(即 `all`)在 Wave 1 必然失败:`src/*.cpp` 一个都还没有,链接期报 `undefined reference to main`。
+这是预期的,Wave 1 的门是 `make check-headers`。
+
+### 2.1 check-headers 的一处必要修正
+
+architecture.md §11 写的是 `$(CXX) ... -fsyntax-only -x c++ $$h`,直接把头文件当主文件编。
+GCC 对此会无条件报 `warning: #pragma once in main file`,且该警告**无法用任何 `-Wno-*` 关掉**
+(libcpp 里是 `CPP_W_NONE`)。改为生成一个只 `#include` 该头的 TU 从 stdin 编译:
+既没有伪警告,也更贴近头文件真实的使用方式。同时 `SYNFLAGS` 过滤掉 `-MMD -MP`,
+否则语法检查会生成与目标文件同名的 `.d`,污染 `-include $(DEP)`。
+
+### 2.2 ncurses 宽字符与链接实测
+
+- `-lncursesw -lcurl -lpthread` 实测可链接通过(`get_wch` / `add_wch` / `addnwstr` / `curl_global_init` 全部解析)。
+- Debian 的 ncursesw 头默认 `NCURSES_WIDECHAR=1`,**不需要** `-D_XOPEN_SOURCE_EXTENDED`;
+  macOS 自带 ncurses 若不给宽字符原型,Makefile 的 Darwin 分支里留了一行注释掉的
+  `CPPFLAGS += -D_XOPEN_SOURCE_EXTENDED` 备用(未在 macOS 上验证)。
+
+### 2.3 ★ 给 Wave 4 的硬性纪律:curses.h 只能出现在 ui.cpp,且必须先 `#define NCURSES_NOMACROS 1`
+
+实测反证(见脚本第 3 步):不加该宏时,`curses.h` 的函数式宏
+`clear() / erase() / move() / scroll() / refresh() / timeout() / border() / instr()`
+会把我们的成员调用打坏,报错形如:
+
+```
+src/panel.h:64:8: error: expected identifier before ‘,’ token
+   64 |   int  scroll() const;
+```
+
+`TextBuffer::erase` 是 architecture.md 规定的名字(改不了),所以这条纪律不可回避。
+`ui.h` 已做到零 curses 依赖:`Ui` 的成员里没有任何 `WINDOW*`,键码在
+`Ui::getKeyBlockingFor` 内部归一化成 `keys.h` 的自有键码空间后才交给上层。
+
+## 3. 对 architecture.md 签名的补齐与必要修正(冻结前请过一遍)
+
+### 3.1 结构性决定(影响多个模块,最需要确认)
+
+1. **`EvKind` / `AppEvent` 落在 `ai.h`。** 文档 §9 把 `Mailbox`、`EvKind`、`AppEvent` 写在一个
+   代码块里但没指定文件。`AppEvent` 需要 `AiSink`(在 `ai.h`),而 `ai.h` 需要
+   `Mailbox<AppEvent>`,若把 `AppEvent` 放进 `mailbox.h` 就会成环。故:
+   `mailbox.h` 只留纯模板容器,事件类型跟 `AiSink` 同住 `ai.h`。
+2. **`ai.h` 用前置声明持有 `CompileOutcome` / `ProcResult`。**
+   `struct CompileOutcome;` + `struct ProcResult;` + `shared_ptr` 成员(不完整类型的
+   `shared_ptr` 的拷贝/移动/析构是标准保证合法的)。这样依赖图与文档 §1 完全一致、无环。
+   代价:**构造这两个 shared_ptr 的地方必须自己 include `build.h` / `proc.h`**(即 `app.cpp`)。
+3. **`proc.h` 也用 `struct AppEvent;` 前置声明**,保持文档所说的“proc 无依赖”。
+   → `proc.cpp`(Wave 2 Agent E)实现 `Runner` 时**必须 `#include "ai.h"`** 才能构造事件。
+4. **编译诊断的组装责任划给 App,不在 Runner。** `Runner` 只填 `AppEvent::run`
+   (`shared_ptr<ProcResult>`)与 `gen = JobId`;`App::onCompileDone` 再调
+   新增的 `Builder::analyze()` 得到 `CompileOutcome`。否则 `proc.cpp` 就得依赖 `build.h`,
+   破坏 Wave 2 的并行不变式。
+5. **归一化键码空间(新增,`keys.h`)。** ncurses 的 `KEY_DOWN`(0402=258)与 Unicode
+   U+0102 数值重叠,直接返回 `wget_wch` 的码点会把 "ā/Ă" 之类当方向键。故约定:
+   `kKeyNone=-1` / 控制字符 0..0x1F,0x7F 原样 / `KEY_*` 原样 / 可打印字符 = `Char(cp) = 0x1000000+cp` /
+   Alt = `kAltFlag(0x2000000) | 键` / `kKeyResize = 0x4000001`。
+   主循环因此比较 `k == kKeyNone` / `k == kKeyResize`,而不是文档 §10 里的 `ERR` / `KEY_RESIZE`
+   —— 好处是 `app.cpp` 完全不必 include curses.h(见 2.3)。
+
+### 3.2 新增的方法 / 类型(文档未给但实现必需)
+
+| 位置 | 新增 | 为什么 |
+|---|---|---|
+| `proc.h` | `runProcess(spec, std::atomic<pid_t>* out_pgid = nullptr)` 多了第 2 个参数 | `Runner::killInFlight()` 必须拿到子进程组 id,而 pgid 只有 spawn 之后才知道;这是唯一能把它交出来的地方(默认参数,单测仍可只传 spec) |
+| `proc.h` | `signalName(int)`、`commandLineForDisplay(const ProcSpec&)`、`ProcResult::ok()`、`Runner::currentJob()`、`Runner::cancelQueued()` | 摘要文案、面板回显命令、事件配对 |
+| `proc.h` | `Runner::Job` 私有嵌套结构 | `Mailbox<Job>` 成员需要完整类型 |
+| `build.h` | `Builder::analyze(pr, binary_path, syntax_only)`、`Builder::syntaxOnly(src)`、`diagSevZh()`、`CompileOutcome::syntax_only`、`CompileOutcome::summaryZh()` | 见 3.1(4);`.h/.hpp` 走 `-fsyntax-only` 的分支需要一个判定点 |
+| `aihttp.h` | `sseChunkToDelta()`、`chatBodyToText()`、`chatErrorZh()`、`curlErrorZh()`、`SseParser::finish()`、`ChatResponse::reasoning` | 文档 §5.6 用文字描述的协议解析与错误文案映射,拆成纯函数才能被 `tests/test_sse.cpp` 覆盖;`reasoning` 单独存,写代码模式必须丢弃思维链 |
+| `ai.h` | `AiState` + `state()`;`AiRequest::line_prefix`;`aiprompt::*`;`AiService::postprocessCompletion()`(public static,可单测);`AiService::submit()` | `stateZh()` 需要一个真实状态源;后处理要“去掉模型重复的当前行前缀”,故请求里得带这个前缀 |
+| `ai.h` | `AiService` 存 `Config cfg_` **拷贝**(文档只写 `const Config&` 入参) | worker 线程读配置不该依赖 App 的生命周期与 `warnings` 的后续变更 |
+| `textbuf.h` | `lines()`、`clampPos()`、`endPos()`、`hasNonBlank()`、`canUndo/canRedo/clearHistory`、`breakUndoMerge()`、`noteCursorBefore/After()`、`langFromPath()`、`operator!=`、`operator<=`、`Range::empty/normalized` | `hasNonBlank()` 是 §5.3 自动触发条件之一;`breakUndoMerge()` 让“回车/移动/保存/剪切行立刻关组”这条合并规则有落点;`noteCursor*` 让 `UndoGroup::cursorBefore/After` 真的有数据来源(文档给了字段却没给写入口),不调用则退化为由 ops 推断 |
+| `highlight.h` | `kTokCount`、`tokName()`、`Highlighter::lang()`、`HighlightCache::clear()/validUpTo()`、私有 `scratch_` | 主题表按 `kTokCount` 开数组;`tokName` 供 `tests/test_highlight.cpp` 断言可读 |
+| `util.h` | 整份(文档只给了“字符串/路径/文件/时间/UTF-8”几个字) | 关键约定:`byteToDisplayCol`/`displayColToByte` 是字节列与显示列换算的**唯一**通道;`wrapDisplay()` 供面板折中文;`toWide/fromWide` 供 ncurses 宽字符;`hash64` 供 `tempBinaryPath` |
+| `json.h` | 整份。**object 用 `keys_`+`vals_` 两个 vector 存,而不是 `vector<pair<string,Value>>`** | 后者要求 `pair<string,Value>` 在 `Value` 尚不完整时实例化(非法/UB);`vector<Value>` 用不完整类型才是 C++17 明确允许的。因此访问器是 `key(i)` / `value(i)` 而非 `items()` |
+| `panel.h` | 整份:`PanelId/kPanelCount/PanelLine/VisualLine/Panel/StdinBuffer` | 折行以 `VisualLine{logical,start,len}` 表达(指回原字节区间,不复制字符串);`StdinBuffer` 自带一套最小编辑操作,不复用 `Editor`(它带 ghost/高亮,过重) |
+| `keys.h` | 整份:`Action`(48 项)、`Binding{key,action,key_zh}`、`bindings()/lookupAction()/keyName()/helpLines()/isTextInput()` | `key_zh` 让帮助浮层与 `--doctor` 共用一张表,不必两处维护 |
+| `ui.h` | 整份:`Rect/Layout/Theme/Ui` | `Layout` 把 gutter/editor/tabs/panel/prompt/status 六块矩形显式化,`App::relayout()` 据此给 `Editor`/`Panel` 设视口;`Theme::P_*` 共 23 个色对(文档说“8 个 pair”只覆盖语法高亮,UI 元素另需) |
+| `app.h` | 整份:`PromptKind/AppModel/App` | `AppModel` 全是 const 指针与值(渲染层结构上无法写缓冲区);成员声明顺序被注释锁定(cfg_ 先于持 `const Config&` 的 Editor/Builder;events_ 先于持 `Mailbox<AppEvent>*` 的 Runner/AiService) |
+| `editor.h` | `Ghost`(文档只在 §6 代码里出现过字段名)、`Viewport` 归入本文件、`cursorDisplayCol()`、`refreshLang()`、`onBufferChanged()`、`setLastSearch()`、`setClipboard()` | `Ghost` 的 `sink` 默认值刻意取 `PanelOnly` —— 默认即“不可被接受”,这样忘记赋值时的退化方向是安全的 |
+
+### 3.3 语义上刻意保留/强化的点
+
+- `Mailbox::push` 在 `close()` 之后**静默丢弃**(不抛异常),`tryPop` 仍能排空残余 —— 退出路径依赖这个语义,已写进单测。
+- `Mailbox::waitPop(out, -1)` 为无限等待;`0` 等价 `tryPop`。文档只写了 `timeout_ms`,这里把边界定死。
+- `Editor::acceptGhost()` 的四道拦截与 `Editor::setGhost()` 的 sink 校验都写进了头注释,Wave 3 Agent G 照抄即可。
+- `AiService::sinkFor()` 保持 private static + 内联定义在头里,继续做“全工程唯一决策点”。
+
+## 4. 遗留风险
+
+1. **TSan 在本容器不可用**(`vm.mmap_rnd_bits=33`,且无权 sysctl / personality),
+   `Mailbox` 的无竞争性由代码审阅 + ASan/UBSan 20 轮压测背书,不是 TSan 背书。
+   若要真做 TSan,需在宿主上 `sysctl -w vm.mmap_rnd_bits=28`。
+2. **macOS 侧一行都没编过。** 风险点集中在:自带 ncurses 的宽字符原型是否需要
+   `-D_XOPEN_SOURCE_EXTENDED`、`set_escdelay` 是否可用(ncurses 5.7 起有)、
+   `brew --prefix ncurses` 分支。Wave 5 必须在真机上过一遍。
+3. 头文件里所有的**行数预算**(如 `panel.cpp 300`)现在明显偏紧了:`panel.h`/`ui.h`/`app.h`
+   的接口比文档设想的宽,对应 `.cpp` 大概率要多出 30%~50% 行数。这只影响估算,不影响接口。
+4. `util.h` 的 `wrapDisplay` / `displayColToByte` 语义只在注释里定义,没有单测护栏。
+   Wave 2 Agent B 没被要求写 `tests/test_util.cpp` —— 建议补一个,因为“光标穿过中文与 Tab”
+   是最容易出现 off-by-one 的地方,而它错了 UI 会全面歪掉。
+5. `json.h` 的 object 访问器是 `key(i)/value(i)`(见 3.2),与常见 JSON 库的 `items()` 手感不同,
+   `config.cpp` / `aihttp.cpp` 的作者若按习惯写会先编译失败一次。

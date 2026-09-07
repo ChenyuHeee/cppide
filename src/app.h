@@ -1,0 +1,197 @@
+// app.h —— AppModel(给 Ui 的只读视图)与 App(主循环与编排)
+//
+// 分工:
+//   * App 拥有一切(Config / Editor / Panel / Runner / AiService),负责按键分派、
+//     事件排空、编译运行 AI 的编排;
+//   * Ui 只拿 AppModel(全是 const 指针与值)去画 —— 渲染层没有任何写缓冲区的能力,
+//     这是 §6 结构性保证的一部分。
+//
+// 主循环(§10):
+//   while (!quit_) {
+//     if (dirty_) { ui_.draw(model()); dirty_ = false; }
+//     int k = ui_.getKeyBlockingFor(cfg_.tick_ms);      // 60ms
+//     if (k == kKeyNone)   { tick(); continue; }
+//     if (k == kKeyResize) { ui_.handleResize(); relayout(); dirty_ = true; continue; }
+//     onKey(k); tick();
+//   }
+//   tick(): drainEvents(每 tick 最多 200 个) -> ai_.maybeAutoTrigger() -> 状态栏消息过期
+//
+// 成员声明顺序即构造顺序,**不要重排**:cfg_ 要早于持有 const Config& 的 Editor/Builder;
+// events_ 要早于持有 Mailbox<AppEvent>* 的 Runner / AiService。
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "ai.h"
+#include "aihttp.h"
+#include "build.h"
+#include "config.h"
+#include "editor.h"
+#include "keys.h"
+#include "mailbox.h"
+#include "panel.h"
+#include "proc.h"
+#include "textbuf.h"
+#include "ui.h"
+
+// 提示行的用途(Ctrl-G / Ctrl-F / AI 提问 / 退出确认)。
+enum class PromptKind { None, GotoLine, Find, AiQuestion, ConfirmQuit, SaveAs };
+
+// Ui 的只读视图。每帧由 App::model() 现算,生命周期仅限该次 draw 调用。
+struct AppModel {
+  const Config* cfg = nullptr;
+  const Editor* ed = nullptr;
+  const Panel*  panels = nullptr;        // 连续 kPanelCount 个
+  int   panel_count = kPanelCount;
+  const StdinBuffer* stdin_buf = nullptr;
+  const CompileOutcome* last_compile = nullptr;   // 可为 null
+
+  // 焦点:-1 = 编辑区;否则为 PanelId 的整数值。
+  int  focus = -1;
+  bool panel_visible = true;
+  int  panel_height = 10;
+
+  // AI 状态
+  AiMode ai_mode = AiMode::Practice;
+  AiState ai_state = AiState::Disabled;
+  const char* ai_state_zh = "";
+
+  // 文件与状态栏
+  std::string file_name;                 // 展示用 basename;未命名时为 "未命名"
+  bool file_dirty = false;
+  int  cursor_line = 1, cursor_col = 1;  // 1 起,col 为显示列
+  std::string lang_zh;                   // "C" / "C++" / "文本"
+  std::string build_summary_zh;          // 上次构建结果
+  int  errors = 0, warnings = 0;
+  bool running = false;                  // 有子进程在跑(状态栏提示 "运行中… Esc 终止")
+  std::string status_msg;                // 临时消息(过期由 tick 清)
+
+  // 提示行
+  PromptKind prompt = PromptKind::None;
+  std::string prompt_label;
+  std::string prompt_input;
+  int prompt_cursor = 0;                 // 字节偏移
+
+  bool help_visible = false;
+};
+
+class App {
+ public:
+  // cfg 按值接管(App 是它的所有者);open_path 为空则打开一个未命名空缓冲区。
+  App(Config cfg, std::string open_path);
+  ~App();
+  App(const App&) = delete;
+  App& operator=(const App&) = delete;
+
+  bool init(std::string& err);        // Ui::init + 首帧布局 + 启动提示
+  int  run();                         // 主循环;返回进程退出码
+  AppModel model() const;
+
+ private:
+  // ---- 循环骨架 ----
+  void tick();
+  void drainEvents();
+  void onKey(int key);
+  void onEditorKey(int key, Action a);
+  void onPanelKey(int key, Action a);
+  void onPromptKey(int key, Action a);
+  void relayout();
+  void markDirty();
+
+  // ---- 事件处理 ----
+  void onAiStarted(const AppEvent& ev);
+  void onAiDelta(const AppEvent& ev);
+  // ★ §6(2) 的那个唯一 switch:GhostText 分支才调 Editor::setGhost,
+  //   PanelOnly 分支只往 AI 面板追加文本。
+  // ★ 语义 = **替换**:ev.text 就是本轮完整最终文本,delta 一律不落地。
+  void onAiDone(const AppEvent& ev);
+  void onAiError(const AppEvent& ev);
+  void onCompileStarted(const AppEvent& ev);
+  void onCompileDone(const AppEvent& ev);
+  void onRunStarted(const AppEvent& ev);
+  void onRunDone(const AppEvent& ev);
+
+  // ---- 动作 ----
+  void doSave();
+  void doQuit(bool force);
+  void doCompile(bool then_run);
+  void doRun(bool auto_compile);
+  void doToggleAiMode();
+  void doAskAi();
+  void doTab();            // 有 ghost 则 acceptGhost,否则 indent —— 这条路径不判模式
+  void doEscape();         // ghost -> 提示行 -> 面板焦点;运行面板中 = 终止子进程
+  void doHelp(bool on);
+  void doRedraw();
+
+  // ---- 诊断跳转 ----
+  void jumpToDiag(int diag_index);
+  void cycleDiag(int dir);            // Ctrl-N / Ctrl-P
+
+  // ---- 提示行 ----
+  void openPrompt(PromptKind k, std::string label, std::string initial = "");
+  void submitPrompt();
+  void cancelPrompt();
+
+  // ---- 面板 ----
+  Panel& panel(PanelId id);
+  const Panel& panel(PanelId id) const;
+  void focusPanel(PanelId id);
+  void unfocusPanel();
+  void nextTab();
+  void togglePanel();
+  void resizePanel(int delta);
+  void appendAi(const std::string& text, bool meta = false);
+  void setStatus(std::string msg, int ms = 3000);
+  std::string stdinData() const;      // cfg.stdin_file 优先,否则【输入】面板内容
+
+  // ---- 成员(顺序即构造顺序,勿重排)----
+  Config cfg_;
+  Ui ui_;
+  Editor ed_;
+  std::vector<Panel> panels_;
+  StdinBuffer stdin_buf_;
+  Builder builder_;
+  Mailbox<AppEvent> events_;
+  Runner runner_;
+  AiService ai_;
+
+  std::string open_path_;
+  std::shared_ptr<CompileOutcome> last_compile_;
+  std::shared_ptr<ProcResult> last_run_;
+  Runner::JobId compile_job_ = 0;
+  Runner::JobId run_job_ = 0;
+  bool run_after_compile_ = false;
+
+  bool quit_ = false;
+  bool dirty_ = true;
+  bool help_ = false;
+  bool panel_visible_ = true;
+  int  panel_height_ = 10;
+  int  focus_ = -1;                   // -1 = 编辑区
+  int  diag_cursor_ = -1;
+
+  PromptKind prompt_ = PromptKind::None;
+  std::string prompt_label_;
+  std::string prompt_input_;
+  int prompt_cursor_ = 0;
+
+  std::string status_msg_;
+  int64_t status_expire_ms_ = 0;
+  std::string build_summary_zh_;
+
+  // ---- Wave 4:App 内部编排状态(只新增 private 成员变量,未改任何签名)----
+  std::string compile_src_;         // 本次编译的源文件(analyze / 跳行都要它)
+  std::string compile_binary_;      // 本次编译的产物路径(syntax_only 时为空)
+  bool compile_syntax_only_ = false;
+  bool last_busy_ = false;          // 上一 tick 的 runner_.busy():变化时刷状态栏
+  std::string ai_stream_;           // 本轮已收到的 delta 累积(仅进度用,永不落地)
+  Pos ai_anchor_{};                 // AiStarted 时的光标 = ghost 的插入锚点
+  uint64_t ai_anchor_gen_ = 0;      // ai_anchor_ 属于哪个 generation
+
+  // ---- Wave 5:命令行给的路径还不存在 -> 按"新文件"打开(main() 已校验父目录
+  //      存在且扩展名受支持)。存盘成功后置回 false。
+  bool new_file_ = false;
+};
